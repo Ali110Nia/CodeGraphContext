@@ -155,10 +155,12 @@ def index_helper(path: str):
     
     if repo_exists:
         # Check if the repository actually has files (not just an empty node from interrupted indexing)
+        # Use variable-length path to handle both flat (Repository->File) and
+        # hierarchical (Repository->Directory->...->File) graph structures
         try:
             with db_manager.get_driver().session() as session:
                 result = session.run(
-                    "MATCH (r:Repository {path: $path})-[:CONTAINS]->(f:File) RETURN count(f) as file_count",
+                    "MATCH (r:Repository {path: $path})-[:CONTAINS*]->(f:File) RETURN count(f) as file_count",
                     path=str(path_obj)
                 )
                 record = result.single()
