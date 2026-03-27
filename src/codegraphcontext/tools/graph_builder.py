@@ -517,8 +517,12 @@ class GraphBuilder:
                     # Ensure full_import_name is available in params for SET clause
                     params = imp.copy()
                     params['path'] = file_path_str
-                    params['rel_props'] = rel_props
                     params['module_name'] = imp.get('name') # Use 'name' from imp as module name
+
+                    # Sanitize scalar params but keep rel_props as a dict
+                    # (FalkorDB SET r += $rel_props requires a map, not a string)
+                    sanitized = self._sanitize_props(params)
+                    sanitized['rel_props'] = rel_props
 
                     session.run(f"""
                         MATCH (f:File {{path: $path}})
@@ -526,7 +530,7 @@ class GraphBuilder:
                         {set_clause_str}
                         MERGE (f)-[r:IMPORTS]->(m)
                         SET r += $rel_props
-                    """, **self._sanitize_props(params))
+                    """, **sanitized)
 
 
             # Handle CONTAINS relationship between class to their children like variables
