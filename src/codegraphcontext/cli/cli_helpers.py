@@ -77,7 +77,7 @@ def _initialize_services():
     return db_manager, graph_builder, code_finder
 
 
-async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, is_dependency: bool = False):
+async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, is_dependency: bool = False, incremental: bool = False):
     """Internal helper to run indexing with a Live progress bar."""
     job_id = graph_builder.job_manager.create_job(str(path_obj), is_dependency=is_dependency)
     
@@ -101,7 +101,7 @@ async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, 
         )
 
         indexing_task = asyncio.create_task(
-            graph_builder.build_graph_from_path_async(path_obj, is_dependency=is_dependency, job_id=job_id)
+            graph_builder.build_graph_from_path_async(path_obj, is_dependency=is_dependency, job_id=job_id, incremental=incremental)
         )
 
         from ..core.jobs import JobStatus
@@ -154,30 +154,13 @@ def index_helper(path: str):
     repo_exists = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
     
     if repo_exists:
-        # Check if the repository actually has files (not just an empty node from interrupted indexing)
-        try:
-            with db_manager.get_driver().session() as session:
-                result = session.run(
-                    "MATCH (r:Repository {path: $path})-[:CONTAINS]->(f:File) RETURN count(f) as file_count",
-                    path=str(path_obj)
-                )
-                record = result.single()
-                file_count = record["file_count"] if record else 0
-                
-                if file_count > 0:
-                    console.print(f"[yellow]Repository '{path}' is already indexed with {file_count} files. Skipping.[/yellow]")
-                    console.print("[dim]💡 Tip: Use 'cgc index --force' to re-index[/dim]")
-                    db_manager.close_driver()
-                    return
-                else:
-                    console.print(f"[yellow]Repository '{path}' exists but has no files (likely interrupted). Re-indexing...[/yellow]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not check file count: {e}. Proceeding with indexing...[/yellow]")
-
-    console.print(f"Starting indexing for: {path_obj}")
+        console.print(f"[cyan]Repository '{path}' exists. Performing incremental index...[/cyan]")
+        console.print("[dim]💡 Tip: Use 'cgc index --force' to rebuild from scratch[/dim]")
+    else:
+        console.print(f"Starting indexing for: {path_obj}")
 
     try:
-        asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False))
+        asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False, incremental=repo_exists))
         time_end = time.time()
         elapsed = time_end - time_start
         console.print(f"[green]Successfully finished indexing: {path} in {elapsed:.2f} seconds[/green]")

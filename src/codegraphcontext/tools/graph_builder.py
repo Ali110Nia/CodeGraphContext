@@ -325,12 +325,12 @@ class GraphBuilder:
             except ValueError:
                 relative_path = file_name
 
+            file_path_obj = Path(file_path_str)
+
             session.run("""
                 MERGE (f:File {path: $path})
-                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency
-            """, path=file_path_str, name=file_name, relative_path=relative_path, is_dependency=is_dependency)
-
-            file_path_obj = Path(file_path_str)
+                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency, f.last_modified = $last_modified
+            """, path=file_path_str, name=file_name, relative_path=relative_path, is_dependency=is_dependency, last_modified=file_path_obj.stat().st_mtime)
             if repo_result:
                 repo_path_obj = Path(repo_result['path'])
             else:
@@ -1182,7 +1182,7 @@ class GraphBuilder:
 
 
     async def build_graph_from_path_async(
-        self, path: Path, is_dependency: bool = False, job_id: str = None
+        self, path: Path, is_dependency: bool = False, job_id: str = None, incremental: bool = False
     ):
         """Builds graph from a directory or file path."""
         try:
@@ -1307,6 +1307,30 @@ class GraphBuilder:
                         # Should not happen if ignore_root is a parent, but safety fallback
                         filtered_files.append(f)
                 files = filtered_files
+
+            db_files = {}
+            if incremental:
+                with self.driver.session() as session:
+                    res = session.run("MATCH (r:Repository {path: $repo_path})-[:CONTAINS*]->(f:File) RETURN f.path as path, f.last_modified as last_modified", repo_path=str(path.resolve()))
+                    for record in res:
+                        db_files[record["path"]] = record["last_modified"] or 0
+
+            deleted_files = set(db_files.keys())
+            needs_update = set()
+
+            for file in files:
+                file_path_str = str(file.resolve())
+                if file_path_str in deleted_files:
+                    deleted_files.remove(file_path_str)
+
+                mtime = file.stat().st_mtime
+                if not incremental or file_path_str not in db_files or mtime > db_files[file_path_str]:
+                    needs_update.add(file_path_str)
+
+            if incremental:
+                for del_file in deleted_files:
+                    self.delete_file_from_graph(del_file)
+
             if job_id:
                 self.job_manager.update_job(job_id, total_files=len(files))
             
@@ -1323,19 +1347,19 @@ class GraphBuilder:
                         self.job_manager.update_job(job_id, current_file=str(file))
                     repo_path = path.resolve() if path.is_dir() else file.parent.resolve()
                     file_data = self.parse_file(repo_path, file, is_dependency)
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
-                    if "error" not in file_data:
-                        self.add_file_to_graph(file_data, repo_name, imports_map)
-                        all_file_data.append(file_data)
+                    file_path_str = str(file.resolve())
 
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
+                    if "error" not in file_data:
+                        if not incremental or file_path_str in needs_update:
+                            if incremental and file_path_str in db_files:
+                                self.delete_file_from_graph(file_path_str)
+                            self.add_file_to_graph(file_data, repo_name, imports_map)
+                        all_file_data.append(file_data)
                     else:
-                        # create minimal node if parser not available
-                        self.add_minimal_file_node(file, repo_path, is_dependency)
+                        if not incremental or file_path_str in needs_update:
+                            if incremental and file_path_str in db_files:
+                                self.delete_file_from_graph(file_path_str)
+                            self.add_minimal_file_node(file, repo_path, is_dependency)
                     processed_count += 1
 
                     if job_id:
@@ -1387,11 +1411,13 @@ class GraphBuilder:
                 """
                 MERGE (f:File {path: $file_path})
                 SET f.name = $file_name,
-                    f.is_dependency = $is_dependency
+                    f.is_dependency = $is_dependency,
+                    f.last_modified = $last_modified
                 """,
                 file_path=file_path_str,
                 file_name=file_name,
-                is_dependency=is_dependency
+                is_dependency=is_dependency,
+                last_modified=file_path.stat().st_mtime
             )
 
             # Establish directory structure

@@ -59,11 +59,15 @@ class TestSkipExternalResolutionConfig:
 
     def test_set_and_get_config_value(self):
         """Test setting and getting the configuration value."""
+        if "SKIP_EXTERNAL_RESOLUTION" in os.environ:
+            del os.environ["SKIP_EXTERNAL_RESOLUTION"]
         # Set to true
         set_config_value("SKIP_EXTERNAL_RESOLUTION", "true")
         assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "true"
 
         # Set to false
+        if "SKIP_EXTERNAL_RESOLUTION" in os.environ:
+            del os.environ["SKIP_EXTERNAL_RESOLUTION"]
         set_config_value("SKIP_EXTERNAL_RESOLUTION", "false")
         assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "false"
 
