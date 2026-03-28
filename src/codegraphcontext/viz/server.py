@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
+from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 import uvicorn
 import json
@@ -135,13 +136,16 @@ async def get_graph(repo_path: Optional[str] = None):
 
 @app.get("/api/file")
 async def get_file(path: str):
-    file_path = Path(path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    try:
+    def read_file_sync(file_path: Path):
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
         with open(file_path, "r", encoding="utf-8") as f:
             return {"content": f.read()}
+
+    try:
+        return await run_in_threadpool(read_file_sync, Path(path))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
