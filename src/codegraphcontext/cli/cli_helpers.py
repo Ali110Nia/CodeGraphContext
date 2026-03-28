@@ -22,6 +22,7 @@ from ..core.jobs import JobManager
 from ..tools.code_finder import CodeFinder
 from ..tools.graph_builder import GraphBuilder
 from ..tools.package_resolver import get_local_package_path
+from ..utils.debug_log import info_logger, warning_logger
 
 console = Console()
 
@@ -666,9 +667,29 @@ def watch_helper(path: str):
 
     console.print(f"[bold cyan]🔍 Watching {path_obj} for changes...[/bold cyan]")
     
-    # Check if already indexed
+    # Check if already indexed — use File node count as a robust fallback so a
+    # transient empty result from list_indexed_repositories never triggers a
+    # destructive full rescan of an already-populated graph.
     indexed_repos = code_finder.list_indexed_repositories()
     is_indexed = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
+    if not is_indexed:
+        # Fallback: count File nodes whose path starts with this repo's path.
+        # If > 100 exist, the repo is clearly already indexed — skip the scan.
+        try:
+            with code_finder.driver.session() as _s:
+                _r = _s.run(
+                    "MATCH (n:File) WHERE n.path STARTS WITH $p RETURN count(n) AS c",
+                    p=str(path_obj) + "/"
+                )
+                _count = _r.single()["c"]
+            if _count > 100:
+                info_logger(
+                    f"[watch] list_indexed_repositories returned no match for {path_obj} "
+                    f"but {_count} File nodes exist — treating as already indexed."
+                )
+                is_indexed = True
+        except Exception as _e:
+            warning_logger(f"[watch] Fallback indexed check failed: {_e}")
     
     # Create watcher instance
     job_manager = JobManager()
