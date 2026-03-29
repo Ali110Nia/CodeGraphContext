@@ -201,6 +201,7 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
   });
   const [showConfig, setShowConfig] = useState(false);
   const [lineWidth, setLineWidth] = useState(0.8);
+  const [nodeSize, setNodeSize] = useState(3.0);
 
   // Sidebar resize / collapse
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W);
@@ -254,7 +255,7 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
     const isFocused = focusSet ? focusSet.nodes.has(node.id) : true;
     
     const baseColor = nodeColors[node.type] || nodeColors.Other;
-    const radius = node.val * 0.8;
+    const radius = node.val * 0.8 * nodeSize;
     const opacity = isFocused ? (isHovered ? 1 : 0.9) : 0.05;
 
     const isMassive = data.nodes && data.nodes.length > 3000;
@@ -289,7 +290,7 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
       ctx.fillText(node.name || 'Unknown', node.x, node.y + radius + (fontSize/2) + 4);
       if (isFocused && !isMassive) ctx.shadowBlur = 0;
     }
-  }, [hoverNode, selectedFile, nodeColors, visibleNodeTypes, focusSet, data]);
+  }, [hoverNode, selectedFile, nodeColors, visibleNodeTypes, focusSet, data, nodeSize]);
 
   const handleZoom = (inOut: number) => {
     fgRef.current?.zoom(fgRef.current.zoom() * inOut, 400);
@@ -433,6 +434,15 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
                         <Palette className="w-3 h-3" /> Visualization Config
                       </h3>
                       
+                      <div className="mb-6 px-1">
+                        <label className="text-[10px] text-gray-400 uppercase font-bold tracking-widest block mb-2">Node Size: {nodeSize.toFixed(1)}x</label>
+                        <input 
+                          type="range" min="0.2" max="4.0" step="0.1" value={nodeSize} 
+                          onChange={(e) => setNodeSize(parseFloat(e.target.value))}
+                          className="w-full accent-purple-500 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                        />
+                      </div>
+
                       <div className="mb-6 px-1">
                         <label className="text-[10px] text-gray-400 uppercase font-bold tracking-widest block mb-2">Edge Width: {lineWidth.toFixed(1)}px</label>
                         <input 

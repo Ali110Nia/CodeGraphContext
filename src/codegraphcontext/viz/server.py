@@ -129,37 +129,48 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                 
                 try:
                     rel = record.get('rel')
-                    if rel:
-                        rid = get_eid(rel)
-                        
-                        # Try various ways to get start/end nodes
-                        start_node = None
-                        end_node = None
-                        for src_attr in ['start_node', 'src_node', '_src_node']:
-                            if hasattr(rel, src_attr):
-                                start_node = getattr(rel, src_attr)
-                                break
-                        for dest_attr in ['end_node', 'dest_node', '_dest_node']:
-                            if hasattr(rel, dest_attr):
-                                end_node = getattr(rel, dest_attr)
-                                break
-                        
-                        source = get_eid(start_node) if start_node is not None else None
-                        target = get_eid(end_node) if end_node is not None else None
-                        
-                        if source and target:
-                            # Extract relationship type
+                    if rel is not None:
+                        # One-shot debug: print type and keys/attrs of first rel
+                        if not edges:
+                            if isinstance(rel, dict):
+                                print(f"DEBUG rel (dict): keys={list(rel.keys())}", file=sys.stderr, flush=True)
+                            else:
+                                print(f"DEBUG rel (obj): type={type(rel).__name__}, attrs={[a for a in dir(rel) if not a.startswith('__')]}", file=sys.stderr, flush=True)
+
+                        # FalkorDB Lite may return rels as dicts OR objects
+                        if isinstance(rel, dict):
+                            rid = str(rel.get('id', id(rel)))
+                            src = rel.get('src_node')
+                            dst = rel.get('dest_node')
+                            source = str(src) if src is not None else None
+                            target = str(dst) if dst is not None else None
+                            rel_type = str(rel.get('relation', rel.get('type', 'RELATED'))).upper()
+                        else:
+                            rid = get_eid(rel)
+                            start_node = None
+                            end_node = None
+                            for src_attr in ['start_node', 'src_node', '_src_node']:
+                                if hasattr(rel, src_attr):
+                                    start_node = getattr(rel, src_attr)
+                                    break
+                            for dest_attr in ['end_node', 'dest_node', '_dest_node']:
+                                if hasattr(rel, dest_attr):
+                                    end_node = getattr(rel, dest_attr)
+                                    break
+                            source = get_eid(start_node) if start_node is not None else None
+                            target = get_eid(end_node) if end_node is not None else None
                             rel_type = "RELATED"
                             for rel_attr in ['type', 'relation', '_relation']:
                                 if hasattr(rel, rel_attr):
-                                    rel_type = getattr(rel, rel_attr)
+                                    rel_type = str(getattr(rel, rel_attr)).upper()
                                     break
-                                    
+
+                        if source and target:
                             edges.append({
                                 "id": rid,
                                 "source": source,
                                 "target": target,
-                                "type": str(rel_type).upper()
+                                "type": rel_type
                             })
                 except Exception as e:
                     print(f"DEBUG: Error parsing relationship: {e}", file=sys.stderr, flush=True)
