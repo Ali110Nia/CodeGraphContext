@@ -14,9 +14,22 @@ from ..utils.debug_log import debug_log, info_logger, error_logger, warning_logg
 from tree_sitter import Language, Parser
 from ..utils.tree_sitter_manager import get_tree_sitter_manager
 from ..cli.config_manager import get_config_value
+from ..utils.path_ignore import file_path_has_ignore_dir_segment
 import fnmatch
  
 DEFAULT_IGNORE_PATTERNS = [
+    # Vendor / env dirs (gitignore-style; complements IGNORE_DIRS during indexing)
+    "node_modules/",
+    "venv/",
+    ".venv/",
+    "env/",
+    ".env/",
+    "dist/",
+    "build/",
+    "target/",
+    "out/",
+    ".git/",
+    "__pycache__/",
     "*.png",
     "*.jpg",
     "*.jpeg",
@@ -1215,13 +1228,16 @@ class GraphBuilder:
 
             # Step 4: Write nodes to graph using existing add_file_to_graph()
             processed = 0
+            index_root = path.resolve()
             for abs_path_str, file_data in files_data.items():
-                file_data["repo_path"] = str(path.resolve())
+                file_path = Path(abs_path_str)
+                if file_path.is_file() and file_path_has_ignore_dir_segment(file_path, index_root):
+                    continue
+                file_data["repo_path"] = str(index_root)
                 if job_id:
                     self.job_manager.update_job(job_id, current_file=abs_path_str)
 
                 # Step 5: Tree-sitter supplement — add source text, complexity, imports and bases
-                file_path = Path(abs_path_str)
                 ts_parser = self.get_parser(file_path.suffix)
                 if file_path.exists() and ts_parser:
                     try:

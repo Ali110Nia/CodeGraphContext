@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pathlib import Path
 
 from ..core.database import DatabaseManager
+from ..utils.path_ignore import cypher_path_not_under_ignore_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -540,10 +541,12 @@ class CodeFinder:
         with self.driver.session() as session:
             repo_filter = "AND func.path STARTS WITH $repo_path" if repo_path else ""
             decorator_filter = "AND ALL(decorator_name IN $exclude_decorated_with WHERE NOT decorator_name IN func.decorators)" if exclude_decorated_with else ""
+            func_ignore = cypher_path_not_under_ignore_dirs("func.path")
+            caller_ignore = cypher_path_not_under_ignore_dirs("caller.path")
             
             query = f"""
                 MATCH (func:Function)
-                WHERE func.is_dependency = false {repo_filter}
+                WHERE func.is_dependency = false {repo_filter} {func_ignore}
                   AND NOT func.name IN ['main', 'setup', 'run']
                   AND NOT (func.name STARTS WITH '__' AND func.name ENDS WITH '__')
                   AND NOT func.name STARTS WITH '_test'
@@ -555,7 +558,7 @@ class CodeFinder:
                   {decorator_filter}
                 WITH func
                 OPTIONAL MATCH (caller:Function)-[:CALLS]->(func)
-                WHERE caller.is_dependency = false
+                WHERE caller.is_dependency = false {caller_ignore}
                 WITH func, count(caller) as caller_count
                 WHERE caller_count = 0
                 OPTIONAL MATCH (file:File)-[:CONTAINS]->(func)
@@ -998,9 +1001,10 @@ class CodeFinder:
         """Find the most complex functions based on cyclomatic complexity."""
         with self.driver.session() as session:
             repo_filter = "AND f.path STARTS WITH $repo_path" if repo_path else ""
+            path_ignore = cypher_path_not_under_ignore_dirs("f.path")
             query = f"""
                 MATCH (f:Function)
-                WHERE f.cyclomatic_complexity IS NOT NULL AND f.is_dependency = false {repo_filter}
+                WHERE f.cyclomatic_complexity IS NOT NULL AND f.is_dependency = false {repo_filter} {path_ignore}
                 RETURN f.name as function_name, f.path as path, f.cyclomatic_complexity as complexity, f.line_number as line_number
                 ORDER BY f.cyclomatic_complexity DESC
                 LIMIT $limit
