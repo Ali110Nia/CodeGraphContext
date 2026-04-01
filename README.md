@@ -407,6 +407,32 @@ Add the following server configuration to your client's settings file (e.g., VS 
 }
 ```
 
+#### If installed via pipx
+
+If you installed CodeGraphContext using `pipx`, use the following configuration instead:
+```json
+{
+  "mcpServers": {
+    "CodeGraphContext": {
+      "command": "pipx",
+      "args": [
+        "run",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ],
+      "env": {
+        "NEO4J_URI": "YOUR_NEO4J_URI",
+        "NEO4J_USERNAME": "YOUR_NEO4J_USERNAME",
+        "NEO4J_PASSWORD": "YOUR_NEO4J_PASSWORD"
+      },
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
+```
+
 ---
 
 ## Natural Language Interaction Examples
