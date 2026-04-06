@@ -43,6 +43,18 @@ def ensure_default_cgcignore(path: Path, default_patterns: list[str]) -> None:
     content += "\n".join(default_patterns) + "\n"
     path.write_text(content, encoding="utf-8")
 
+
+def read_cgcignore_patterns(path: Path, default_patterns: list[str]) -> list[str]:
+    """Read .cgcignore patterns and merge them with defaults.
+
+    Empty lines and comment lines are ignored.
+    """
+    if not path.exists():
+        return list(default_patterns)
+
+    user_patterns = parse_cgcignore_lines(path.read_text(encoding="utf-8").splitlines())
+    return list(default_patterns) + user_patterns
+
 def build_ignore_spec(
     ignore_root: Path,
     default_patterns: list[str],
@@ -55,8 +67,7 @@ def build_ignore_spec(
     cgcignore_path = find_cgcignore(ignore_root, explicit_path)
 
     if cgcignore_path:
-        user_patterns = parse_cgcignore_lines(cgcignore_path.read_text(encoding="utf-8").splitlines())
-        all_patterns = default_patterns + user_patterns
+        all_patterns = read_cgcignore_patterns(cgcignore_path, default_patterns)
         return PathSpec.from_lines("gitwildmatch", all_patterns), cgcignore_path
 
     if explicit_path:

@@ -3,6 +3,7 @@ from pathlib import Path
 from codegraphcontext.core.cgcignore import (
     build_ignore_spec,
     parse_cgcignore_lines,
+    read_cgcignore_patterns,
 )
 
 
@@ -53,3 +54,12 @@ def test_build_ignore_spec_auto_creates_cgcignore_with_defaults(tmp_path: Path):
     assert spec.match_file("image.png")
     assert spec.match_file("archives/data.zip")
     assert not spec.match_file("src/main.py")
+
+
+def test_read_cgcignore_patterns_merges_defaults_with_user_patterns(tmp_path: Path):
+    cgcignore = tmp_path / ".cgcignore"
+    cgcignore.write_text("# comment\n\n*.txt\n*.log\n", encoding="utf-8")
+
+    merged = read_cgcignore_patterns(cgcignore, ["*.png", "*.json"])
+
+    assert merged == ["*.png", "*.json", "*.txt", "*.log"]
