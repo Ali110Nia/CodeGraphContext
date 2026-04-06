@@ -82,3 +82,47 @@ def test_find_cgcignore_does_not_escape_non_git_root(tmp_path: Path):
     assert (repo / ".cgcignore").exists()
     assert spec.match_file("image.png")
     assert not spec.match_file("notes.txt")
+
+
+def test_build_ignore_spec_prefers_local_over_explicit_context_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    local_cgcignore = repo / ".cgcignore"
+    local_cgcignore.write_text("*.txt\n", encoding="utf-8")
+
+    context_cgcignore = tmp_path / "context" / ".cgcignore"
+    context_cgcignore.parent.mkdir(parents=True)
+    context_cgcignore.write_text("*.json\n", encoding="utf-8")
+
+    spec, resolved = build_ignore_spec(
+        ignore_root=repo,
+        default_patterns=["*.png"],
+        explicit_path=str(context_cgcignore),
+    )
+
+    assert resolved == local_cgcignore
+    assert spec.match_file("notes.txt")
+    assert spec.match_file("config.json")
+    assert spec.match_file("assets/image.png")
+    assert not spec.match_file("src/main.py")
+
+
+def test_build_ignore_spec_auto_creates_local_even_with_explicit_context_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    context_cgcignore = tmp_path / "context" / ".cgcignore"
+    context_cgcignore.parent.mkdir(parents=True)
+    context_cgcignore.write_text("*.txt\n", encoding="utf-8")
+
+    spec, resolved = build_ignore_spec(
+        ignore_root=repo,
+        default_patterns=["*.png"],
+        explicit_path=str(context_cgcignore),
+    )
+
+    assert resolved == repo / ".cgcignore"
+    assert resolved.exists()
+    assert spec.match_file("notes.txt")
+    assert spec.match_file("assets/image.png")
+    assert not spec.match_file("src/main.py")

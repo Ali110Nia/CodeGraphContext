@@ -2,6 +2,17 @@ from pathlib import Path
 from typing import Iterable, Optional, Tuple
 from pathspec import PathSpec
 
+
+def _resolve_explicit_path(ignore_root: Path, explicit_path: Optional[str]) -> Optional[Path]:
+    """Resolve an explicit .cgcignore path relative to *ignore_root*."""
+    if not explicit_path:
+        return None
+
+    candidate = Path(explicit_path)
+    if not candidate.is_absolute():
+        candidate = (ignore_root / candidate).resolve()
+    return candidate
+
 def parse_cgcignore_lines(lines: Iterable[str]) -> list[str]:
     """Return valid ignore patterns from raw .cgcignore lines.
 
@@ -17,13 +28,7 @@ def parse_cgcignore_lines(lines: Iterable[str]) -> list[str]:
 
 
 def find_cgcignore(ignore_root: Path, explicit_path: Optional[str] = None) -> Optional[Path]:
-    """Find a .cgcignore file, preferring an explicit path when provided."""
-    if explicit_path:
-        candidate = Path(explicit_path)
-        if not candidate.is_absolute():
-            candidate = (ignore_root / candidate).resolve()
-        if candidate.exists():
-            return candidate
+    """Find a repository-local .cgcignore, with explicit path fallback."""
 
     # Search parent folders only within the current git worktree. If the
     # indexed path is outside a git repo (e.g. /tmp test dirs), avoid crawling
@@ -48,9 +53,14 @@ def find_cgcignore(ignore_root: Path, explicit_path: Optional[str] = None) -> Op
             return None
 
         if curr == git_root:
-            return None
+            break
 
         curr = curr.parent
+
+    explicit_candidate = _resolve_explicit_path(ignore_root, explicit_path)
+    if explicit_candidate and explicit_candidate.exists():
+        return explicit_candidate
+    return None
 
 def ensure_default_cgcignore(path: Path, default_patterns: list[str]) -> None:
     """Create a .cgcignore file with default patterns when it does not exist."""
@@ -83,17 +93,26 @@ def build_ignore_spec(
 
     Returns the compiled spec and the discovered/created .cgcignore path.
     """
-    cgcignore_path = find_cgcignore(ignore_root, explicit_path)
+    local_cgcignore_path = find_cgcignore(ignore_root, explicit_path=None)
+    explicit_cgcignore_path = _resolve_explicit_path(ignore_root, explicit_path)
 
-    if cgcignore_path:
-        all_patterns = read_cgcignore_patterns(cgcignore_path, default_patterns)
-        return PathSpec.from_lines("gitwildmatch", all_patterns), cgcignore_path
+    if local_cgcignore_path is None:
+        local_cgcignore_path = ignore_root / ".cgcignore"
+        ensure_default_cgcignore(local_cgcignore_path, default_patterns)
 
-    if explicit_path:
-        target_path = Path(explicit_path)
-        if not target_path.is_absolute():
-            target_path = (ignore_root / target_path).resolve()
-    else:
-        target_path = ignore_root / ".cgcignore"
-    ensure_default_cgcignore(target_path, default_patterns)
-    return PathSpec.from_lines("gitwildmatch", default_patterns), target_path
+    merged_user_patterns: list[str] = []
+    merged_user_patterns.extend(
+        parse_cgcignore_lines(local_cgcignore_path.read_text(encoding="utf-8").splitlines())
+    )
+
+    if (
+        explicit_cgcignore_path
+        and explicit_cgcignore_path.exists()
+        and explicit_cgcignore_path != local_cgcignore_path
+    ):
+        merged_user_patterns.extend(
+            parse_cgcignore_lines(explicit_cgcignore_path.read_text(encoding="utf-8").splitlines())
+        )
+
+    all_patterns = merged_user_patterns + list(default_patterns)
+    return PathSpec.from_lines("gitwildmatch", all_patterns), local_cgcignore_path
