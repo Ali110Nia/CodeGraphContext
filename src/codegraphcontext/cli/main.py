@@ -133,8 +133,7 @@ def mcp_start():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        # Initialize and run the main server.
-        server = MCPServer(loop=loop)
+        server = MCPServer(loop=loop, cwd=Path.cwd())
         loop.run_until_complete(server.run())
     except ValueError as e:
         # This typically happens if credentials are still not found after all checks.
@@ -211,6 +210,74 @@ def neo4j_setup():
 def neo4j_setup_alias():
     """Shortcut for 'cgc neo4j setup'"""
     neo4j_setup()
+
+
+# Create Context command group
+context_app = typer.Typer(help="Manage Contexts (logical workspaces) and Mode")
+app.add_typer(context_app, name="context")
+
+@context_app.command("list")
+def context_list():
+    """List all available contexts and current mode."""
+    cfg = config_manager.load_context_config()
+    console.print(f"\n[bold]Current Mode:[/bold] {cfg.mode}")
+    if cfg.mode == "named":
+        console.print(f"[bold]Default Context:[/bold] {cfg.default_context or '<none>'}")
+    
+    contexts = config_manager.list_contexts()
+    if not contexts:
+        console.print("\n[yellow]No custom contexts defined. Using global default.[/yellow]")
+        return
+        
+    table = Table(title="\nConfigured Contexts")
+    table.add_column("Name", style="cyan")
+    table.add_column("Database", style="green")
+    table.add_column("DB Path", style="dim")
+    table.add_column("Repos Linked", justify="right")
+    
+    for ctx in contexts:
+        marker = " *" if ctx.name == cfg.default_context else ""
+        table.add_row(
+            f"{ctx.name}{marker}",
+            ctx.database,
+            ctx.db_path,
+            str(len(ctx.repos))
+        )
+    console.print(table)
+    console.print("[dim] * indicates default context[/dim]\n")
+
+@context_app.command("create")
+def context_create(
+    name: str = typer.Argument(..., help="Name of the new context"),
+    database: str = typer.Option(None, "--database", "-d", help="Database backend (falkordb, kuzudb, neo4j). Defaults to DEFAULT_DATABASE from config."),
+    db_path: str = typer.Option(None, "--db-path", help="Explicit path for the DB (defaults to ~/.codegraphcontext/contexts/<name>/db)"),
+):
+    """Create a new logical context."""
+    if database is None:
+        database = config_manager.get_config_value("DEFAULT_DATABASE") or "falkordb"
+    config_manager.create_context(name, database, db_path)
+
+@context_app.command("delete")
+def context_delete(
+    name: str = typer.Argument(..., help="Name of the context to delete")
+):
+    """Delete a context from the registry."""
+    if typer.confirm(f"Are you sure you want to delete context '{name}'? DB files will remain on disk."):
+        config_manager.delete_context(name)
+
+@context_app.command("mode")
+def context_mode(
+    mode: str = typer.Argument(..., help="Mode to switch to (global, per-repo, named)"),
+):
+    """Set the system-wide context mode."""
+    config_manager.set_context_mode(mode.lower())
+
+@context_app.command("default")
+def context_default(
+    name: str = typer.Argument(..., help="Name of the context to set as default"),
+):
+    """Set the default named context (used when --context is omitted in named mode)."""
+    config_manager.set_default_context(name)
 
 
 # ============================================================================
@@ -442,7 +509,8 @@ app.add_typer(bundle_app, name="bundle")
 def bundle_export(
     output: str = typer.Argument(..., help="Output path for the .cgc bundle file"),
     repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Specific repository path to export (default: export all)"),
-    no_stats: bool = typer.Option(False, "--no-stats", help="Skip statistics generation")
+    no_stats: bool = typer.Option(False, "--no-stats", help="Skip statistics generation"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Export the current graph to a portable .cgc bundle.
@@ -458,10 +526,10 @@ def bundle_export(
     _load_credentials()
     from codegraphcontext.core.cgc_bundle import CGCBundle
     
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         output_path = Path(output)
@@ -492,7 +560,8 @@ def bundle_export(
 @bundle_app.command("import")
 def bundle_import(
     bundle_file: str = typer.Argument(..., help="Path to the .cgc bundle file to import"),
-    clear: bool = typer.Option(False, "--clear", help="Clear existing graph data before importing")
+    clear: bool = typer.Option(False, "--clear", help="Clear existing graph data before importing"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Import a .cgc bundle into the current database.
@@ -507,10 +576,10 @@ def bundle_import(
     _load_credentials()
     from codegraphcontext.core.cgc_bundle import CGCBundle
     
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         bundle_path = Path(bundle_file)
@@ -726,18 +795,26 @@ def doctor():
     console.print("[bold cyan]🏥 Running CodeGraphContext Diagnostics...[/bold cyan]\n")
     
     all_checks_passed = True
+
+    config_manager.ensure_first_run_bootstrap()
+    config_manager.ensure_config_file()
     
     # 1. Check configuration
     console.print("[bold]1. Checking Configuration...[/bold]")
     try:
         config = config_manager.load_config()
         
-        # Check if config file actually exists
         if config_manager.CONFIG_FILE.exists():
-            console.print(f"   [green]✓[/green] Configuration loaded from {config_manager.CONFIG_FILE}")
+            console.print(f"   [green]✓[/green] Config loaded from {config_manager.CONFIG_FILE}")
         else:
-            console.print(f"   [yellow]ℹ[/yellow] No config file found, using defaults")
+            console.print(f"   [yellow]ℹ[/yellow] No .env config found, using defaults")
             console.print(f"   [dim]Config will be created at: {config_manager.CONFIG_FILE}[/dim]")
+            
+        if config_manager.CONTEXT_CONFIG_FILE.exists():
+            console.print(f"   [green]✓[/green] Context config loaded from {config_manager.CONTEXT_CONFIG_FILE}")
+        else:
+            console.print(f"   [yellow]ℹ[/yellow] No Context config found")
+            console.print(f"   [dim]Context config will be auto-generated at: {config_manager.CONTEXT_CONFIG_FILE}[/dim]")
         
         # Validate each config value
         invalid_configs = []
@@ -775,7 +852,7 @@ def doctor():
                 if is_connected:
                     console.print(f"   [green]✓[/green] Neo4j connection successful")
                 else:
-                    console.print(f"   [red]✗[/red] Neo4j connection failed: {error_msg}")
+                    console.print(f"[red]✗[/red] Neo4j connection failed: {error_msg}")
                     all_checks_passed = False
             else:
                 console.print(f"   [yellow]⚠[/yellow] Neo4j credentials not set. Run 'cgc neo4j setup'")
@@ -810,14 +887,21 @@ def doctor():
             from tree_sitter_language_pack import get_language
             console.print(f"   [green]✓[/green] tree-sitter-language-pack is installed")
             
-            # Test a few languages
-            test_langs = ["python", "javascript", "typescript"]
-            for lang in test_langs:
+            from codegraphcontext.utils.tree_sitter_manager import LANGUAGE_ALIASES, LANGUAGE_PACK_NAMES
+            all_langs = sorted(set(LANGUAGE_ALIASES.values()))
+            console.print(f"   [dim]Supported languages ({len(all_langs)}): {', '.join(all_langs)}[/dim]")
+            probe_langs = ["python", "javascript", "typescript", "java", "go", "rust", "c", "cpp"]
+            available, unavailable = [], []
+            for lang in probe_langs:
                 try:
-                    get_language(lang)
-                    console.print(f"   [green]✓[/green] {lang} parser available")
+                    pack_name = LANGUAGE_PACK_NAMES.get(lang, lang)
+                    get_language(pack_name)
+                    available.append(lang)
                 except Exception:
-                    console.print(f"   [yellow]⚠[/yellow] {lang} parser not available")
+                    unavailable.append(lang)
+            console.print(f"   [green]✓[/green] {len(available)}/{len(probe_langs)} probed parsers OK: {', '.join(available)}")
+            if unavailable:
+                console.print(f"   [yellow]⚠[/yellow] Unavailable: {', '.join(unavailable)}")
         except ImportError:
             console.print(f"   [red]✗[/red] tree-sitter-language-pack not installed")
             all_checks_passed = False
@@ -883,7 +967,8 @@ def start():
 @app.command()
 def index(
     path: Optional[str] = typer.Argument(None, help="Path to the directory or file to index. Defaults to the current directory."),
-    force: bool = typer.Option(False, "--force", "-f", help="Force re-index (delete existing and rebuild)")
+    force: bool = typer.Option(False, "--force", "-f", help="Force re-index (delete existing and rebuild)"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use (overrides mode/default)"),
 ):
     """
     Indexes a directory or file by adding it to the code graph.
@@ -897,12 +982,14 @@ def index(
     
     if force:
         console.print("[yellow]Force re-indexing (--force flag detected)[/yellow]")
-        reindex_helper(path)
+        reindex_helper(path, context)
     else:
-        index_helper(path)
+        index_helper(path, context)
 
 @app.command()
-def clean():
+def clean(
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+):
     """
     Remove orphaned nodes and relationships from the database.
     
@@ -910,10 +997,13 @@ def clean():
     helping to keep your database tidy and performant.
     """
     _load_credentials()
-    clean_helper()
+    clean_helper(context)
 
 @app.command()
-def stats(path: Optional[str] = typer.Argument(None, help="Path to show stats for. Omit for overall stats.")):
+def stats(
+    path: Optional[str] = typer.Argument(None, help="Path to show stats for. Omit for overall stats."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+):
     """
     Show indexing statistics.
     
@@ -923,12 +1013,13 @@ def stats(path: Optional[str] = typer.Argument(None, help="Path to show stats fo
     _load_credentials()
     if path:
         path = str(Path(path).resolve())
-    stats_helper(path)
+    stats_helper(path, context)
 
 @app.command()
 def delete(
     path: Optional[str] = typer.Argument(None, help="Path of the repository to delete from the code graph."),
-    all_repos: bool = typer.Option(False, "--all", help="Delete all indexed repositories")
+    all_repos: bool = typer.Option(False, "--all", help="Delete all indexed repositories"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """
     Deletes a repository from the code graph.
@@ -943,10 +1034,10 @@ def delete(
     
     if all_repos:
         # Delete all repositories
-        services = _initialize_services()
-        if not all(services):
+        services = _initialize_services(context)
+        if not all(services[:3]):
             return
-        db_manager, graph_builder, code_finder = services
+        db_manager, graph_builder, code_finder = services[:3]
         
         try:
             # Get list of repositories
@@ -1005,36 +1096,43 @@ def delete(
             console.print("Usage: cgc delete <path> or cgc delete --all")
             raise typer.Exit(code=1)
         
-        delete_helper(path)
+        delete_helper(path, context)
 
 @app.command()
 def visualize(
     repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to visualize."),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on.")
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """
     Launches the interactive UI to visualize the code graph.
     """
     _load_credentials()
-    visualize_helper(repo, port)
+    visualize_helper(repo, port, context)
 
 @app.command("list")
-def list_repositories():
+def list_repositories(
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+):
     """
     List all indexed repositories.
     
     Shows all projects and packages that have been indexed in the code graph.
     """
     _load_credentials()
-    list_repos_helper()
+    list_repos_helper(context)
 
 @app.command(name="add-package")
-def add_package(package_name: str = typer.Argument(..., help="Name of the package to add."), language: str = typer.Argument(..., help="Language of the package." )):
+def add_package(
+    package_name: str = typer.Argument(..., help="Name of the package to add."),
+    language: str = typer.Argument(..., help="Language of the package."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+):
     """
     Adds a package to the code graph.
     """
     _load_credentials()
-    add_package_helper(package_name, language)
+    add_package_helper(package_name, language, context)
 
 # ============================================================================
 # WATCH COMMAND GROUP - Live File Monitoring
@@ -1042,7 +1140,8 @@ def add_package(package_name: str = typer.Argument(..., help="Name of the packag
 
 @app.command()
 def watch(
-    path: str = typer.Argument(".", help="Path to the directory to watch. Defaults to current directory.")
+    path: str = typer.Argument(".", help="Path to the directory to watch. Defaults to current directory."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Watch a directory for file changes and automatically update the code graph.
@@ -1064,11 +1163,12 @@ def watch(
         cgc w .                        # Using shortcut alias
     """
     _load_credentials()
-    watch_helper(path)
+    watch_helper(path, context)
 
 @app.command()
 def unwatch(
-    path: str = typer.Argument(..., help="Path to stop watching")
+    path: str = typer.Argument(..., help="Path to stop watching"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Stop watching a directory for changes.
@@ -1083,7 +1183,9 @@ def unwatch(
     unwatch_helper(path)
 
 @app.command()
-def watching():
+def watching(
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+):
     """
     List all directories currently being watched for changes.
     
@@ -1110,7 +1212,8 @@ def find_by_name(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Exact name to search for"),
     type: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by type (function, class, file, module)"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find code elements by exact name.
@@ -1121,10 +1224,10 @@ def find_by_name(
         cgc find name MyClass --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = []
@@ -1210,8 +1313,9 @@ def find_by_name(
 def find_by_pattern(
     ctx: typer.Context,
     pattern: str = typer.Argument(..., help="Substring pattern to search (fuzzy search fallback)"),
-    case_sensitive: bool = typer.Option(False, "--case-sensitive", "-c", help="Case-sensitive search"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    case_sensitive: bool = typer.Option(False, "--case-sensitive", "-C", help="Case-sensitive search"),
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find code elements using substring matching.
@@ -1222,10 +1326,10 @@ def find_by_pattern(
         cgc find pattern "Auth" --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         with db_manager.get_driver().session() as session:
@@ -1303,7 +1407,8 @@ def find_by_type(
     ctx: typer.Context,
     element_type: str = typer.Argument(..., help="Type to search for (function, class, file, module)"),
     limit: int = typer.Option(50, "--limit", "-l", help="Maximum results to return"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find all elements of a specific type.
@@ -1314,10 +1419,10 @@ def find_by_type(
         cgc find type class --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_by_type(element_type, limit)
@@ -1358,7 +1463,8 @@ def find_by_type(
 
 @find_app.command("variable")
 def find_by_variable(
-    name: str = typer.Argument(..., help="Variable name to search for")
+    name: str = typer.Argument(..., help="Variable name to search for"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find variables by name.
@@ -1368,10 +1474,10 @@ def find_by_variable(
         cgc find variable config
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_by_variable_name(name)
@@ -1403,7 +1509,8 @@ def find_by_variable(
 
 @find_app.command("content")
 def find_by_content_search(
-    query: str = typer.Argument(..., help="Text to search for in source code and docstrings")
+    query: str = typer.Argument(..., help="Text to search for in source code and docstrings"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Search code content (source and docstrings) using full-text index.
@@ -1413,10 +1520,10 @@ def find_by_content_search(
         cgc find content "TODO: refactor"
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         try:
@@ -1464,7 +1571,8 @@ def find_by_content_search(
 @find_app.command("decorator")
 def find_by_decorator_search(
     decorator: str = typer.Argument(..., help="Decorator name to search for"),
-    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path")
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find functions with a specific decorator.
@@ -1474,10 +1582,10 @@ def find_by_decorator_search(
         cgc find decorator test --file tests/test_main.py
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_functions_by_decorator(decorator, file)
@@ -1511,7 +1619,8 @@ def find_by_decorator_search(
 @find_app.command("argument")
 def find_by_argument_search(
     argument: str = typer.Argument(..., help="Argument/parameter name to search for"),
-    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path")
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find functions that take a specific argument/parameter.
@@ -1521,10 +1630,10 @@ def find_by_argument_search(
         cgc find argument user_id --file src/auth.py
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_functions_by_argument(argument, file)
@@ -1565,7 +1674,8 @@ def analyze_calls(
     ctx: typer.Context,
     function: str = typer.Argument(..., help="Function name to analyze"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show what functions this function calls (callees).
@@ -1576,10 +1686,10 @@ def analyze_calls(
         cgc analyze calls process_data --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.what_does_function_call(function, file)
@@ -1620,7 +1730,8 @@ def analyze_callers(
     ctx: typer.Context,
     function: str = typer.Argument(..., help="Function name to analyze"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show what functions call this function.
@@ -1631,10 +1742,10 @@ def analyze_callers(
         cgc analyze callers process_data --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.who_calls_function(function, file)
@@ -1680,7 +1791,8 @@ def analyze_chain(
     max_depth: int = typer.Option(5, "--depth", "-d", help="Maximum call chain depth"),
     from_file: Optional[str] = typer.Option(None, "--from-file", help="File for starting function"),
     to_file: Optional[str] = typer.Option(None, "--to-file", help="File for target function"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show call chain between two functions.
@@ -1691,10 +1803,10 @@ def analyze_chain(
         cgc analyze chain main process_data --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_function_call_chain(from_func, to_func, max_depth, from_file, to_file)
@@ -1750,7 +1862,8 @@ def analyze_dependencies(
     ctx: typer.Context,
     target: str = typer.Argument(..., help="Module name"),
     show_external: bool = typer.Option(True, "--external/--no-external", help="Show external dependencies"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show dependencies and imports for a module.
@@ -1761,10 +1874,10 @@ def analyze_dependencies(
         cgc analyze deps mymodule --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_module_dependencies(target)
@@ -1801,7 +1914,8 @@ def analyze_inheritance_tree(
     ctx: typer.Context,
     class_name: str = typer.Argument(..., help="Class name"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show inheritance hierarchy for a class.
@@ -1812,10 +1926,10 @@ def analyze_inheritance_tree(
         cgc analyze tree MyClass --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_class_hierarchy(class_name, file)
@@ -1866,7 +1980,8 @@ def analyze_complexity(
     path: Optional[str] = typer.Argument(None, help="Specific function name to analyze"),
     threshold: int = typer.Option(10, "--threshold", "-t", help="Complexity threshold for warnings"),
     limit: int = typer.Option(20, "--limit", "-l", help="Maximum results to show"),
-    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path (only used when function name is provided)")
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path (only used when function name is provided)"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Show cyclomatic complexity for functions.
@@ -1878,10 +1993,10 @@ def analyze_complexity(
         cgc analyze complexity my_function -f file.py # Specific function in file
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         if path:
@@ -1929,7 +2044,8 @@ def analyze_complexity(
 @analyze_app.command("dead-code")
 def analyze_dead_code(
     path: Optional[str] = typer.Argument(None, help="Path to analyze (not yet implemented)"),
-    exclude_decorators: Optional[str] = typer.Option(None, "--exclude", "-e", help="Comma-separated decorators to exclude")
+    exclude_decorators: Optional[str] = typer.Option(None, "--exclude", "-e", help="Comma-separated decorators to exclude"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find potentially unused functions and classes.
@@ -1939,10 +2055,10 @@ def analyze_dead_code(
         cgc analyze dead-code --exclude route,task,api
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         exclude_list = exclude_decorators.split(',') if exclude_decorators else []
@@ -1979,7 +2095,8 @@ def analyze_dead_code(
 def analyze_overrides(
     ctx: typer.Context,
     function_name: str = typer.Argument(..., help="Function/method name to find implementations of"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Find all implementations of a function across different classes.
@@ -1992,10 +2109,10 @@ def analyze_overrides(
         cgc analyze overrides area --visual
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         results = code_finder.find_function_overrides(function_name)
@@ -2033,7 +2150,8 @@ def analyze_overrides(
 @analyze_app.command("variable")
 def analyze_variable_usage(
     variable_name: str = typer.Argument(..., help="Variable name to analyze"),
-    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path")
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Analyze where a variable is defined and used across the codebase.
@@ -2046,10 +2164,10 @@ def analyze_variable_usage(
         cgc analyze variable x --file math_utils.py
     """
     _load_credentials()
-    services = _initialize_services()
-    if not all(services):
+    services = _initialize_services(context)
+    if not all(services[:3]):
         return
-    db_manager, graph_builder, code_finder = services
+    db_manager, graph_builder, code_finder = services[:3]
     
     try:
         # Get variable usage scope
@@ -2106,7 +2224,8 @@ def analyze_variable_usage(
 def query_graph(
     ctx: typer.Context,
     query: str = typer.Argument(..., help="Cypher query to execute (read-only)"),
-    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization")
+    visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
     Execute a custom Cypher query on the code graph.
@@ -2120,16 +2239,19 @@ def query_graph(
     
     # Check if visual mode is enabled
     if check_visual_flag(ctx, visual):
-        cypher_helper_visual(query)
+        cypher_helper_visual(query, context)
     else:
-        cypher_helper(query)
+        cypher_helper(query, context)
 
 # Keep old 'cypher' as alias for backward compatibility
 @app.command("cypher", hidden=True)
-def cypher_legacy(query: str = typer.Argument(..., help="The read-only Cypher query to execute.")):
+def cypher_legacy(
+    query: str = typer.Argument(..., help="The read-only Cypher query to execute."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+):
     """[Deprecated] Use 'cgc query' instead."""
     console.print("[yellow]⚠️  'cgc cypher' is deprecated. Use 'cgc query' instead.[/yellow]")
-    cypher_helper(query)
+    cypher_helper(query, context)
 
 
 
@@ -2140,37 +2262,45 @@ def cypher_legacy(query: str = typer.Argument(..., help="The read-only Cypher qu
 @app.command("i", rich_help_panel="Shortcuts")
 def index_abbrev(
     path: Optional[str] = typer.Argument(None, help="Path to index"),
-    force: bool = typer.Option(False, "--force", "-f", help="Force re-index (delete existing and rebuild)")
+    force: bool = typer.Option(False, "--force", "-f", help="Force re-index (delete existing and rebuild)"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """Shortcut for 'cgc index'"""
-    index(path, force=force)
+    index(path, force=force, context=context)
 
 @app.command("ls", rich_help_panel="Shortcuts")
-def list_abbrev():
+def list_abbrev(
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+):
     """Shortcut for 'cgc list'"""
-    list_repositories()
+    list_repositories(context=context)
 
 @app.command("rm", rich_help_panel="Shortcuts")
 def delete_abbrev(
     path: Optional[str] = typer.Argument(None, help="Path to delete"),
-    all_repos: bool = typer.Option(False, "--all", help="Delete all indexed repositories")
+    all_repos: bool = typer.Option(False, "--all", help="Delete all indexed repositories"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """Shortcut for 'cgc delete'"""
-    delete(path, all_repos)
+    delete(path, all_repos, context=context)
 
 @app.command("v", rich_help_panel="Shortcuts")
 def visualize_abbrev(
     repo: Optional[str] = typer.Argument(None, help="Path to the repository to visualize."),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on.")
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """Shortcut for 'cgc visualize'"""
     _load_credentials()
-    visualize_helper(repo, port)
+    visualize_helper(repo, port, context=context)
 
 @app.command("w", rich_help_panel="Shortcuts")
-def watch_abbrev(path: str = typer.Argument(".", help="Path to watch")):
+def watch_abbrev(
+    path: str = typer.Argument(".", help="Path to watch"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+):
     """Shortcut for 'cgc watch'"""
-    watch(path)
+    watch(path, context=context)
 
 
 # ============================================================================
