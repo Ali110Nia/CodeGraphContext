@@ -375,6 +375,23 @@ class CGCBundle:
         
         return schema
     
+
+    def _parse_dict_props(self, d: Dict[str, Any]) -> Dict[str, Any]:
+        parsed = {}
+        for k, v in d.items():
+            if isinstance(v, str) and (v.startswith('[') or v.startswith('{')):
+                try:
+                    val = json.loads(v)
+                    if isinstance(val, (list, dict)):
+                        parsed[k] = val
+                    else:
+                        parsed[k] = v
+                except (json.JSONDecodeError, TypeError):
+                    parsed[k] = v
+            else:
+                parsed[k] = v
+        return parsed
+
     def _extract_nodes(self, output_file: Path, repo_path: Optional[Path]) -> int:
         """Extract all nodes to JSONL format."""
         count = 0
@@ -415,6 +432,7 @@ class CGCBundle:
                         elif hasattr(node, 'properties'):
                             node_dict = dict(node.properties)
                     
+                    node_dict = self._parse_dict_props(node_dict)
                     node_dict['_labels'] = labels
                     
                     # Store internal ID for reference
@@ -486,6 +504,7 @@ class CGCBundle:
                             rel_props = dict(rel.properties)
                     
                     # Create edge representation
+                    rel_props = self._parse_dict_props(rel_props)
                     edge_dict = {
                         'from': from_id,
                         'to': to_id,

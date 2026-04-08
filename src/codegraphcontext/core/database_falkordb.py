@@ -11,6 +11,7 @@ class FalkorDBUnavailableError(RuntimeError):
     or GRAPH.QUERY not available). Callers should fall back to KùzuDB.
     """
 import os
+import json
 import sys
 import subprocess
 import time
@@ -352,7 +353,36 @@ class FalkorDBSessionWrapper:
     def __init__(self, graph):
         self.graph = graph
     
+
+
+    def _sanitize_parameters(self, params):
+        if isinstance(params, dict):
+            sanitized = {}
+            for k, v in params.items():
+                if v is None:
+                    continue
+                elif isinstance(v, dict):
+                    sanitized[k] = self._sanitize_parameters(v)
+                elif isinstance(v, (list, tuple)):
+                    # For properties being set, we must serialize lists.
+                    # However, if this is a list of dicts for UNWIND $batch, we shouldn't serialize the outer list,
+                    # but we should serialize inner lists. For simplicity and since FalkorDB doesn't support list properties,
+                    # if the list contains dicts (like for a batch import), we process the dicts.
+                    if len(v) > 0 and isinstance(v[0], dict):
+                        sanitized[k] = [self._sanitize_parameters(item) for item in v]
+                    else:
+                        sanitized[k] = json.dumps(v)
+                else:
+                    sanitized[k] = v
+            return sanitized
+        elif isinstance(params, (list, tuple)):
+            if len(params) > 0 and isinstance(params[0], dict):
+                return [self._sanitize_parameters(item) for item in params]
+            return json.dumps(params)
+        return params
+
     def run(self, query, **parameters):
+
         """
         Execute a Cypher query on FalkorDB.
         """
@@ -360,7 +390,7 @@ class FalkorDBSessionWrapper:
         query = self._translate_schema_query(query)
         
         try:
-            result = self.graph.query(query, parameters)
+            result = self.graph.query(query, self._sanitize_parameters(parameters))
             return FalkorDBResultWrapper(result)
         except Exception as e:
             # Ignore errors about existing constraints/indexes
