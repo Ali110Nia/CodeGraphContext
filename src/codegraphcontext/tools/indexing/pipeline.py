@@ -59,7 +59,7 @@ async def run_tree_sitter_index_async(
         if "error" not in file_data:
             writer.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
             all_file_data.append(file_data)
-        else:
+        elif not file_data.get("unsupported"):
             add_minimal_file_node(file, repo_path, is_dependency)
         processed_count += 1
 

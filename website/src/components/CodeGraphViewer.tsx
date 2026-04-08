@@ -55,7 +55,7 @@ const PALETTE = {
 
 const DEFAULT_NODE_COLORS: Record<string, string> = {
   Repository: '#ffffff',
-  Folder: '#f59e0b',
+  Directory: '#f59e0b',
   File: '#42a5f5',
   Class: '#66bb6a',
   Interface: '#26a69a',
@@ -65,6 +65,10 @@ const DEFAULT_NODE_COLORS: Record<string, string> = {
   Variable: '#ffa726',
   Enum: '#7e57c2',
   Struct: '#5c6bc0',
+  Macro: '#ff7043',
+  Record: '#4db6ac',
+  Union: '#8d6e63',
+  Property: '#dce775',
   Annotation: '#ec407a',
   Parameter: '#90a4ae',
   Other: '#78909c'
@@ -75,6 +79,8 @@ const DEFAULT_EDGE_COLORS: Record<string, string> = {
   CALLS: '#ab47bc',
   IMPORTS: '#42a5f5',
   INHERITS: '#66bb6a',
+  IMPLEMENTS: '#26a69a',
+  INCLUDES: '#81c784',
   HAS_PARAMETER: '#ffca28'
 };
 
@@ -92,9 +98,10 @@ const VISUALIZATION_MODES: { id: VisualizationMode; name: string; description: s
 ];
 
 const EMOJI_MAP: Record<string, string> = {
-  Repository: '🌐', Module: '🧩', Folder: '📁', File: '📄',
+  Repository: '🌐', Module: '🧩', Directory: '📁', File: '📄',
   Class: '🏛️', Struct: '🧊', Interface: '🔌', Trait: '🧬',
   Enum: '🔢', Annotation: '🏷️', Function: '⚙️',
+  Macro: '🔧', Record: '📋', Union: '🔗', Property: '🏠',
 };
 
 // ─── City 3D Island Layout ───────────────────────────────────────────────────
@@ -170,7 +177,7 @@ function layoutCityIslands(
 const CITY_HEIGHTS: Record<string, number> = {
   Class: 14, Interface: 12, Trait: 12, Struct: 13, Enum: 10,
   Function: 7, Module: 6, File: 2.5, Variable: 2, Annotation: 3,
-  Parameter: 1.5, Other: 4, Repository: 0, Folder: 0,
+  Parameter: 1.5, Other: 4, Repository: 0, Directory: 0,
 };
 
 const CITY_ARC_SEGMENTS = 24;
@@ -591,8 +598,8 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
 
   const cityNodeThreeObject = useCallback((node: any) => {
     if (!visibleNodeTypes.has(node.type)) return new THREE.Object3D();
-    // Folders and Repository are represented by platforms, not buildings
-    if (node.type === 'Folder' || node.type === 'Repository') return new THREE.Object3D();
+    // Directories and Repository are represented by platforms, not buildings
+    if (node.type === 'Directory' || node.type === 'Repository') return new THREE.Object3D();
 
     const color = nodeColors[node.type] || nodeColors.Other;
     const degree = degreeMap.get(node.id) || 0;
@@ -864,7 +871,7 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
 
     // Compute building rooftop Y for a node
     const roofY = (n: any) => {
-      if (!n || n.type === 'Folder' || n.type === 'Repository') return 0;
+      if (!n || n.type === 'Directory' || n.type === 'Repository') return 0;
       const deg = degreeMap.get(n.id) || 0;
       const baseH = CITY_HEIGHTS[n.type] || 4;
       const bH = Math.max(1.5, (baseH + deg * 0.5) * nodeSize * 0.5);

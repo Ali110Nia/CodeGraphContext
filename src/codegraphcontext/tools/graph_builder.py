@@ -41,7 +41,7 @@ class GraphBuilder:
             ".cjs": "javascript",
             ".go": "go",
             ".ts": "typescript",
-            ".tsx": "typescript",
+            ".tsx": "tsx",
             ".cpp": "cpp",
             ".h": "cpp",
             ".hpp": "cpp",
@@ -185,7 +185,7 @@ class GraphBuilder:
         parser = self.get_parser(path.suffix)
         if not parser:
             warning_logger(f"No parser found for file extension {path.suffix}. Skipping {path}")
-            return {"path": str(path), "error": f"No parser for {path.suffix}"}
+            return {"path": str(path), "error": f"No parser for {path.suffix}", "unsupported": True}
 
         debug_log(f"[parse_file] Starting parsing for: {path} with {parser.language_name} parser")
         try:
