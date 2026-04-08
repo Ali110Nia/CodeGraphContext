@@ -219,6 +219,18 @@ def find_local_env() -> Optional[Path]:
     return None
 
 
+def codegraphcontext_dotenv_at_cwd(cwd: Optional[Path] = None) -> Optional[Path]:
+    """
+    Return ``<cwd>/.codegraphcontext/.env`` if that file exists, else None.
+
+    *cwd* defaults to ``Path.cwd()``. Parent directories are **not** searched—same rule as
+    local context resolution (``find_local_cgc_dir``).
+    """
+    root = (cwd or Path.cwd()).resolve()
+    candidate = root / ".codegraphcontext" / ".env"
+    return candidate if candidate.exists() else None
+
+
 def save_config(config: Dict[str, str], preserve_db_credentials: bool = True):
     """
     Save configuration to file.

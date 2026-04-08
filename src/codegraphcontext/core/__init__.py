@@ -3,18 +3,16 @@
 Core database management module.
 
 Supports Neo4j, FalkorDB Lite, remote FalkorDB, and KùzuDB backends.
-Use DATABASE_TYPE environment variable to switch:
-- DATABASE_TYPE=kuzudb - Uses embedded KùzuDB (Recommended for cross-platform zero-config)
-- DATABASE_TYPE=falkordb - Uses embedded FalkorDB Lite (Unix-only)
-- DATABASE_TYPE=falkordb-remote - Uses a remote/hosted FalkorDB server over TCP
-- DATABASE_TYPE=neo4j - Uses Neo4j server
-- If not set, auto-detects based on what's available
 
- Priority (no DATABASE_TYPE set):
-  1. FalkorDB Lite  (Unix + Python 3.12+ + falkordblite installed)
-  2. KùzuDB         (cross-platform fallback)
-  3. Remote FalkorDB (if FALKORDB_HOST is set)
-  4. Neo4j           (if credentials are configured)
+Explicit backend selection (see ``get_database_manager``):
+- ``CGC_RUNTIME_DB_TYPE`` — per-invocation override (CLI ``--database`` / MCP resolved context).
+- ``DEFAULT_DATABASE`` — configured default from ``cgc config db …`` / CodeGraphContext ``.env``.
+
+When neither is set, implicit selection:
+- Remote FalkorDB if ``FALKORDB_HOST`` is set (explicit remote signal).
+- Else **Unix**: FalkorDB Lite when Python 3.12+ and ``falkordblite`` work; else KùzuDB if
+  installed; else Neo4j if credentials exist.
+- Else **Windows**: KùzuDB if installed; else Neo4j if credentials exist.
 """
 import os
 import platform
@@ -59,22 +57,14 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
     Factory function to get the appropriate database manager based on configuration.
 
     Selection logic:
-    1. Runtime Override: 'CGC_RUNTIME_DB_TYPE' (set via --database flag)
-    2. Configured Default: 'DEFAULT_DATABASE' (set via 'cgc default database')
-    3. Legacy Env Var: 'DATABASE_TYPE'
-    4. Implicit Default: KùzuDB (Best cross-platform zero-config)
-    5. Auto-detect: Remote FalkorDB (if FALKORDB_HOST is set)
-    6. Fallback Default: FalkorDB Lite (if Unix and available)
-    7. Fallback: Neo4j (if configured)
+    1. Runtime override: ``CGC_RUNTIME_DB_TYPE`` (CLI ``--database``, MCP context).
+    2. Configured default: ``DEFAULT_DATABASE`` (``cgc config db …``, CodeGraphContext ``.env``).
+    3. Implicit: ``FALKORDB_HOST`` → remote FalkorDB; else Unix → FalkorDB Lite when available,
+       then KùzuDB; Windows → KùzuDB first; Neo4j if configured.
     """
     from codegraphcontext.utils.debug_log import info_logger
 
-    # 1. Runtime Override (CLI flag) or Config/Env
-    db_type = os.getenv('CGC_RUNTIME_DB_TYPE')
-    if not db_type:
-        db_type = os.getenv('DEFAULT_DATABASE')
-    if not db_type:
-        db_type = os.getenv('DATABASE_TYPE')
+    db_type = os.getenv("CGC_RUNTIME_DB_TYPE") or os.getenv("DEFAULT_DATABASE")
 
     if db_type:
         db_type = db_type.lower()
@@ -124,14 +114,13 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
         else:
             raise ValueError(f"Unknown database type: '{db_type}'. Use 'kuzudb', 'falkordb', 'falkordb-remote', or 'neo4j'.")
 
-    # 4. Auto-detect: Remote FalkorDB (if FALKORDB_HOST is set)
-    # This takes priority over zero-config local backends because it's an explicit signal
+    # Implicit: remote FalkorDB when FALKORDB_HOST is set (explicit infra signal)
     if _is_falkordb_remote_configured():
         from .database_falkordb_remote import FalkorDBRemoteManager
         info_logger("Using remote FalkorDB (auto-detected via FALKORDB_HOST)")
         return FalkorDBRemoteManager()
 
-    # 5. Implicit Default -> FalkorDB Lite (Unix Zero Config)
+    # Implicit: FalkorDB Lite on Unix when available (typical embedded default there)
     if _is_falkordb_available():
         from .database_falkordb import FalkorDBManager, FalkorDBUnavailableError
         try:
@@ -145,13 +134,13 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
             )
             # fall through to KùzuDB below
 
-    # 6. Implicit Default -> KùzuDB (Best Zero Config)
+    # Implicit: KùzuDB (typical on Windows; Unix fallback when Falkor Lite unavailable)
     if _is_kuzudb_available():
         from .database_kuzu import KuzuDBManager
         info_logger(f"Using KùzuDB (default) at {db_path or 'default path'}")
         return KuzuDBManager(db_path=db_path)
 
-    # 7. Fallback if configured
+    # Implicit: Neo4j when configured
     if _is_neo4j_configured():
         from .database import DatabaseManager
         info_logger("Using Neo4j Server (auto-detected)")

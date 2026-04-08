@@ -54,7 +54,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
         all_files = [f for f in self.repo_path.rglob("*") if f.is_file() and f.suffix in supported_extensions]
         
         # 1. Pre-scan all files to get a global map of where every symbol is defined.
-        self.imports_map = self.graph_builder._pre_scan_for_imports(all_files)
+        self.imports_map = self.graph_builder.pre_scan_imports(all_files)
         
         # 2. Parse all files in detail and cache the parsed data.
         for f in all_files:
@@ -63,8 +63,8 @@ class RepositoryEventHandler(FileSystemEventHandler):
                 self.all_file_data.append(parsed_data)
         
         # 3. After all files are parsed, create the relationships (e.g., function calls) between them.
-        self.graph_builder._create_all_function_calls(self.all_file_data, self.imports_map)
-        self.graph_builder._create_all_inheritance_links(self.all_file_data, self.imports_map)
+        self.graph_builder.link_function_calls(self.all_file_data, self.imports_map)
+        self.graph_builder.link_inheritance(self.all_file_data, self.imports_map)
         # Free memory — all_file_data is only needed during the linking pass.
         self.all_file_data.clear()
         info_logger(f"Initial scan and graph linking complete for: {self.repo_path}")
@@ -99,7 +99,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
                     del self.imports_map[symbol]
         # Merge new contributions (if the file still exists).
         if changed_path.exists():
-            new_map = self.graph_builder._pre_scan_for_imports([changed_path])
+            new_map = self.graph_builder.pre_scan_imports([changed_path])
             for symbol, paths in new_map.items():
                 if symbol not in self.imports_map:
                     self.imports_map[symbol] = []
@@ -171,8 +171,8 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
         # Step 7: Re-create CALLS/INHERITS for the affected subset only.
         info_logger(f"[INCREMENTAL] Re-linking {len(subset_file_data)} files...")
-        self.graph_builder._create_all_function_calls(subset_file_data, self.imports_map, file_class_lookup)
-        self.graph_builder._create_all_inheritance_links(subset_file_data, self.imports_map)
+        self.graph_builder.link_function_calls(subset_file_data, self.imports_map, file_class_lookup)
+        self.graph_builder.link_inheritance(subset_file_data, self.imports_map)
         info_logger(f"[INCREMENTAL] Done. Graph refresh for {event_path_str} complete! ✅")
 
     # The following methods are called by the watchdog observer when a file event occurs.
