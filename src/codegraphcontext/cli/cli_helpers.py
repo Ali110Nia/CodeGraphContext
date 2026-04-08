@@ -24,6 +24,7 @@ from ..tools.code_finder import CodeFinder
 from ..tools.graph_builder import GraphBuilder
 from ..tools.package_resolver import get_local_package_path
 from ..utils.debug_log import info_logger, warning_logger
+from ..core.database import Neo4jConnectionError
 from .config_manager import resolve_context, ResolvedContext, register_repo_in_context, ensure_first_run_bootstrap
 
 console = Console()
@@ -49,9 +50,14 @@ def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, A
 
     console.print("[dim]Initializing services and database connection...[/dim]")
     try:
-        # Override the database backend with the context's specific choice
-        if ctx.database:
-            os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
+        # Respect runtime/backend overrides. Context DB is only a default when
+        # neither runtime override nor DEFAULT_DATABASE is already set.
+        if (
+            ctx.database
+            and not os.getenv("CGC_RUNTIME_DB_TYPE")
+            and not os.getenv("DEFAULT_DATABASE")
+        ):
+            os.environ["DEFAULT_DATABASE"] = ctx.database
         
         # Pass the exact DB path resolved from the context
         db_manager = get_database_manager(db_path=ctx.db_path)
@@ -84,9 +90,35 @@ def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, A
                 console.print(f"[bold red]Critical Error:[/bold red] Both FalkorDB and KùzuDB failed: {kuzu_e}")
                 return None, None, None, ctx
         else:
-            console.print(f"[bold red]Database Connection Error:[/bold red] {e}")
-            console.print("Please ensure your database is configured correctly or run 'cgc doctor'.")
-            return None, None, None, ctx
+            selected_db = (
+                os.environ.get("CGC_RUNTIME_DB_TYPE")
+                or os.environ.get("DATABASE_TYPE")
+                or os.environ.get("DEFAULT_DATABASE")
+                or ""
+            ).lower()
+
+            if isinstance(e, Neo4jConnectionError):
+                console.print(f"[bold red]{e}[/bold red]")
+                allow_fallback = os.environ.get("CGC_ALLOW_NEO4J_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
+
+                if selected_db == "neo4j" and allow_fallback:
+                    console.print("[cyan]Neo4j failed and CGC_ALLOW_NEO4J_FALLBACK=true. Falling back to KuzuDB...[/cyan]")
+                    try:
+                        from ..core.database_kuzu import KuzuDBManager
+                        db_manager = KuzuDBManager()
+                        db_manager.get_driver()
+                        console.print("[green]✓[/green] Successfully switched to KuzuDB fallback")
+                    except Exception as kuzu_e:
+                        console.print(f"[bold red]Critical Error:[/bold red] Neo4j failed and KuzuDB fallback failed: {kuzu_e}")
+                        return None, None, None, ctx
+                else:
+                    if selected_db == "neo4j":
+                        console.print("[yellow]Tip:[/yellow] To continue without Neo4j, rerun with --db kuzudb")
+                    return None, None, None, ctx
+            else:
+                console.print(f"[bold red]Database Connection Error:[/bold red] {e}")
+                console.print("Please ensure your database is configured correctly or run 'cgc doctor'.")
+                return None, None, None, ctx
     
     # The GraphBuilder requires an event loop, even for synchronous-style execution
     try:

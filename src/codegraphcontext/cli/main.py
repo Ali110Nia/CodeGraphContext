@@ -289,9 +289,10 @@ def _load_credentials():
     Loads configuration and credentials from various sources into environment variables.
     Uses per-variable precedence - each variable is loaded from the highest priority source.
     Priority order (highest to lowest):
-    1. Local `mcp.json` env vars (highest - explicit MCP server config)
-    2. Local `.env` in project directory (high - project-specific overrides)
-    3. Global `~/.codegraphcontext/.env` (lowest - user defaults)
+    1. Runtime environment variables (shell/CI)
+    2. Local `.env` in project directory (project-specific overrides)
+    3. Global `~/.codegraphcontext/.env` (user defaults, including `cgc config set`)
+    4. Local `mcp.json` env vars (project defaults)
     """
     from dotenv import dotenv_values
     from codegraphcontext.cli.config_manager import ensure_config_dir
@@ -306,55 +307,63 @@ def _load_credentials():
     # Ensure config directory exists (lazy initialization)
     ensure_config_dir()
     
-    # Collect all config sources in reverse priority order (lowest to highest)
+    # Snapshot runtime environment BEFORE merging config files.
+    # These values must remain highest priority.
+    runtime_env = dict(os.environ)
+
+    # Collect all config sources in precedence order (lowest to highest)
     config_sources = []
     config_source_names = []
-    
-    # 3. Global .env file (lowest priority - user defaults)
-    global_env_path = Path.home() / ".codegraphcontext" / ".env"
-    if global_env_path.exists():
-        try:
-            config_sources.append(dotenv_values(str(global_env_path)))
-            config_source_names.append(str(global_env_path))
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not load global .env: {e}[/yellow]")
-    
-    # 2. Local project .env (higher priority - project-specific overrides)
-    try:
-        dotenv_path = find_dotenv(usecwd=True, raise_error_if_not_found=False)
-        if dotenv_path:
-            config_sources.append(dotenv_values(dotenv_path))
-            config_source_names.append(str(dotenv_path))
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
-    
-    # 1. Local mcp.json (highest priority - explicit MCP server config)
+    key_source_map = {}
+    key_defined_in = {}
+
+    def _append_source(source_name: str, source_values: dict):
+        if not source_values:
+            return
+        config_sources.append(source_values)
+        config_source_names.append(source_name)
+        for k, v in source_values.items():
+            if v is None:
+                continue
+            key_source_map[k] = source_name
+            key_defined_in.setdefault(k, []).append(source_name)
+
+    # 4. Local mcp.json (lowest priority - project defaults)
     mcp_file_path = Path.cwd() / "mcp.json"
     if mcp_file_path.exists():
         try:
             with open(mcp_file_path, "r") as f:
                 mcp_config = json.load(f)
             server_env = mcp_config.get("mcpServers", {}).get("CodeGraphContext", {}).get("env", {})
-            if server_env:
-                config_sources.append(server_env)
-                config_source_names.append("mcp.json")
+            _append_source("mcp.json", server_env)
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load mcp.json: {e}[/yellow]")
+    
+    # 3. Global .env file (user defaults)
+    global_env_path = Path.home() / ".codegraphcontext" / ".env"
+    if global_env_path.exists():
+        try:
+            _append_source(str(global_env_path), dotenv_values(str(global_env_path)))
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not load global .env: {e}[/yellow]")
+    
+    # 2. Local project .env (project-specific overrides)
+    try:
+        dotenv_path = find_dotenv(usecwd=True, raise_error_if_not_found=False)
+        if dotenv_path:
+            _append_source(str(dotenv_path), dotenv_values(dotenv_path))
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
     
     # Merge all configs with proper precedence (later sources override earlier ones)
     merged_config = {}
     for config in config_sources:
         merged_config.update(config)
     
-    # Apply merged config to environment.
-    # IMPORTANT: DB-selection keys set in the shell must win over .env defaults.
-    # E.g. `DATABASE_TYPE=falkordb cgc index …` must not be overridden by
-    # DEFAULT_DATABASE=neo4j sitting in ~/.codegraphcontext/.env
-    DB_OVERRIDE_KEYS = {"DATABASE_TYPE", "CGC_RUNTIME_DB_TYPE", "DEFAULT_DATABASE"}
+    # Apply merged config to environment, but never override runtime env.
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
-            # Never let .env clobber a DB-type key that the user already set in the shell
-            if key in DB_OVERRIDE_KEYS and key in os.environ:
+            if key in runtime_env:
                 continue
             os.environ[key] = str(value)
     
@@ -363,9 +372,20 @@ def _load_credentials():
         if len(config_source_names) == 1:
             console.print(f"[dim]Loaded configuration from: {config_source_names[-1]}[/dim]")
         else:
-            console.print(f"[dim]Loaded configuration from: {', '.join(config_source_names)} (highest priority: {config_source_names[-1]})[/dim]")
+            console.print(f"[dim]Loaded configuration from: {', '.join(config_source_names)}[/dim]")
     else:
         console.print("[yellow]No configuration file found. Using defaults.[/yellow]")
+
+    default_db_sources = list(key_defined_in.get("DEFAULT_DATABASE", []))
+    if "DEFAULT_DATABASE" in runtime_env:
+        default_db_sources.append("environment")
+
+    if len(default_db_sources) > 1:
+        winners = "environment" if "DEFAULT_DATABASE" in runtime_env else key_source_map.get("DEFAULT_DATABASE", "defaults")
+        console.print(
+            "[dim]DEFAULT_DATABASE defined in multiple sources: "
+            f"{', '.join(default_db_sources)}; using: {winners}[/dim]"
+        )
     
     
     # Show which database is actually being used.
@@ -374,11 +394,23 @@ def _load_credentials():
     # falkordblite is installed but its native .so is missing (frozen bundle),
     # the factory falls back to KùzuDB and we display that correctly.
     runtime_db = os.environ.get("CGC_RUNTIME_DB_TYPE")
-    explicit_db = (
-        runtime_db
-        or os.environ.get("DEFAULT_DATABASE")
-        or os.environ.get("DATABASE_TYPE")
-    )
+    database_type = os.environ.get("DATABASE_TYPE")
+    default_database = os.environ.get("DEFAULT_DATABASE")
+
+    explicit_db = runtime_db or database_type or default_database
+
+    if runtime_db:
+        db_source = "runtime-env (CGC_RUNTIME_DB_TYPE)"
+    elif "DATABASE_TYPE" in runtime_env:
+        db_source = "environment (DATABASE_TYPE)"
+    elif "DEFAULT_DATABASE" in runtime_env:
+        db_source = "environment (DEFAULT_DATABASE)"
+    elif database_type and "DATABASE_TYPE" in key_source_map:
+        db_source = key_source_map["DATABASE_TYPE"]
+    elif default_database and "DEFAULT_DATABASE" in key_source_map:
+        db_source = key_source_map["DEFAULT_DATABASE"]
+    else:
+        db_source = "auto-detect"
 
     if explicit_db:
         default_db = explicit_db.lower()
@@ -392,6 +424,7 @@ def _load_credentials():
             # Factory failed entirely — still show a best-guess
             from codegraphcontext.core import _is_falkordb_available
             default_db = "falkordb" if _is_falkordb_available() else "kuzudb"
+        db_source = "auto-detect"
 
     if default_db == "neo4j":
         has_neo4j_creds = all([
@@ -402,28 +435,32 @@ def _load_credentials():
         if has_neo4j_creds:
             neo4j_db = os.environ.get("NEO4J_DATABASE")
             if neo4j_db:
-                console.print(f"[cyan]Using database: Neo4j (database: {neo4j_db})[/cyan]")
+                console.print(f"[cyan]Using database: neo4j (source: {db_source}, database: {neo4j_db})[/cyan]")
             else:
-                console.print("[cyan]Using database: Neo4j[/cyan]")
+                console.print(f"[cyan]Using database: neo4j (source: {db_source})[/cyan]")
         else:
             console.print("[yellow]⚠ DEFAULT_DATABASE=neo4j but credentials not found. Falling back to default.[/yellow]")
     elif default_db == "falkordb":
-        console.print("[cyan]Using database: FalkorDB Lite[/cyan]")
+        console.print(f"[cyan]Using database: falkordb (source: {db_source})[/cyan]")
     elif default_db == "kuzudb":
-        console.print("[cyan]Using database: KùzuDB[/cyan]")
+        console.print(f"[cyan]Using database: kuzudb (source: {db_source})[/cyan]")
     elif default_db == "falkordb-remote":
         host = os.environ.get("FALKORDB_HOST")
         if host:
-            console.print(f"[cyan]Using database: FalkorDB Remote ({host})[/cyan]")
+            console.print(f"[cyan]Using database: falkordb-remote (source: {db_source}, host: {host})[/cyan]")
         else:
             console.print("[yellow]⚠ DATABASE_TYPE=falkordb-remote but FALKORDB_HOST not set.[/yellow]")
     elif default_db == "falkordb":
         if os.environ.get("FALKORDB_HOST"):
-            console.print(f"[cyan]Using database: FalkorDB Remote ({os.environ.get('FALKORDB_HOST')})[/cyan]")
+            console.print(f"[cyan]Using database: falkordb-remote (source: {db_source}, host: {os.environ.get('FALKORDB_HOST')})[/cyan]")
         else:
-            console.print("[cyan]Using database: FalkorDB[/cyan]")
+            console.print(f"[cyan]Using database: falkordb (source: {db_source})[/cyan]")
     else:
-        console.print(f"[cyan]Using database: {default_db}[/cyan]")
+        console.print(f"[cyan]Using database: {default_db} (source: {db_source})[/cyan]")
+
+    # Persist selection metadata for downstream diagnostics and error messages.
+    os.environ["CGC_SELECTED_DATABASE"] = default_db
+    os.environ["CGC_DB_SELECTION_SOURCE"] = db_source
 
 
 
@@ -838,24 +875,45 @@ def doctor():
     console.print("\n[bold]2. Checking Database Connection...[/bold]")
     try:
         _load_credentials()
-        default_db = config.get("DEFAULT_DATABASE", "falkordb")
-        console.print(f"   Default database: {default_db}")
+        default_db = os.environ.get("CGC_SELECTED_DATABASE") or config.get("DEFAULT_DATABASE", "falkordb")
+        db_source = os.environ.get("CGC_DB_SELECTION_SOURCE", "unknown")
+        console.print(f"   Default database: {default_db} (source: {db_source})")
         
         if default_db == "neo4j":
             uri = os.environ.get("NEO4J_URI")
             username = os.environ.get("NEO4J_USERNAME")
             password = os.environ.get("NEO4J_PASSWORD")
-            
-            if uri and username and password:
-                console.print(f"   [cyan]Testing Neo4j connection to {uri}...[/cyan]")
-                is_connected, error_msg = DatabaseManager.test_connection(uri, username, password, database=os.environ.get("NEO4J_DATABASE"))
+            database_name = os.environ.get("NEO4J_DATABASE")
+
+            missing = DatabaseManager.get_missing_credentials(uri, username, password)
+            console.print(f"   [cyan]Credential check:[/cyan] {'OK' if not missing else 'Missing ' + ', '.join(missing)}")
+            if missing:
+                console.print("   [red]✗[/red] Neo4j credentials not configured")
+                console.print("       Run:")
+                console.print("       cgc config set NEO4J_URI bolt://localhost:7687")
+                console.print("       cgc config set NEO4J_USERNAME neo4j")
+                console.print("       cgc config set NEO4J_PASSWORD <your-password>")
+                all_checks_passed = False
+            else:
+                host, port = DatabaseManager.extract_host_port(uri)
+                console.print(f"   [cyan]Endpoint:[/cyan] {host}:{port}")
+
+                is_reachable, reachability_msg = DatabaseManager.check_port_reachable(uri)
+                if is_reachable:
+                    console.print(f"   [green]✓[/green] Port {port} is reachable")
+                else:
+                    console.print(f"   [red]✗[/red] Port check failed: {reachability_msg}")
+                    console.print("       Start Neo4j Desktop or run: docker run -d -p 7687:7687 -p 7474:7474 neo4j")
+                    all_checks_passed = False
+
+                console.print(f"   [cyan]Testing Neo4j authentication/query...[/cyan]")
+                is_connected, error_msg = DatabaseManager.test_connection(uri, username, password, database=database_name)
                 if is_connected:
                     console.print(f"   [green]✓[/green] Neo4j connection successful")
                 else:
-                    console.print(f"[red]✗[/red] Neo4j connection failed: {error_msg}")
+                    console.print(f"   [red]✗[/red] Neo4j connection failed (source: {db_source})")
+                    console.print(f"       Reason: {error_msg}")
                     all_checks_passed = False
-            else:
-                console.print(f"   [yellow]⚠[/yellow] Neo4j credentials not set. Run 'cgc neo4j setup'")
         elif default_db == "kuzudb":
             from importlib.util import find_spec
 
@@ -2326,6 +2384,7 @@ def main(
     database: Optional[str] = typer.Option(
         None, 
         "--database", 
+        "--db",
         "-db", 
         help="[Global] Temporarily override database backend (falkordb, falkordb-remote, neo4j, or kuzudb) for any command"
     ),

@@ -3,6 +3,13 @@ import pytest
 import shutil
 import subprocess
 import os
+import sys
+
+try:
+    import kuzu  # noqa: F401
+    KUZU_AVAILABLE = True
+except ImportError:
+    KUZU_AVAILABLE = False
 
 # We will need the fixtures we defined in conftest.py
 # (python_sample_project, temp_test_dir)
@@ -16,11 +23,10 @@ class TestUserJourneys:
 
     def run_cgc(self, args, cwd=None):
         """Helper to run cgc cli."""
-        # Use sys.executable to ensure we use the same python environment
-        import sys
         cmd = [sys.executable, "-m", "codegraphcontext.cli.main"] + args
         return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
 
+    @pytest.mark.skipif(not KUZU_AVAILABLE, reason="KuzuDB not installed")
     @pytest.mark.slow
     def test_first_time_user_workflow(self, python_sample_project, temp_test_dir):
         """
@@ -43,22 +49,23 @@ class TestUserJourneys:
         
         # 2. Index
         print(f"Indexing {project_dir}...")
-        result = self.run_cgc(["index", str(project_dir)])
+        result = self.run_cgc(["--db", "kuzudb", "index", str(project_dir)])
         assert result.returncode == 0, f"Indexing failed: {result.stderr}"
         
         # 3. List
-        result = self.run_cgc(["list"])
+        result = self.run_cgc(["--db", "kuzudb", "list"])
         assert result.returncode == 0
         assert str(project_dir) in result.stdout or "my_project" in result.stdout
         
         # 4. Find function
         # This relies on the indexer actually working and writing to DB
         # Correct command: cgc find name foo --type function
-        result = self.run_cgc(["find", "name", "foo", "--type", "function"]) 
+        result = self.run_cgc(["--db", "kuzudb", "find", "name", "foo", "--type", "function"])
         assert result.returncode == 0
         # If the sample project has 'foo', we assert it's found
         # assert "foo" in result.stdout (Commented out until we confirm sample content)
 
+    @pytest.mark.skipif(not KUZU_AVAILABLE, reason="KuzuDB not installed")
     @pytest.mark.slow
     def test_clean_up(self, temp_test_dir):
         """User wants to remove a repo."""
@@ -67,14 +74,14 @@ class TestUserJourneys:
         dummy_dir.mkdir()
         (dummy_dir / "main.py").write_text("def main(): pass")
         
-        self.run_cgc(["index", str(dummy_dir)])
+        self.run_cgc(["--db", "kuzudb", "index", str(dummy_dir)])
         
         # Act: Delete
         # We need to bypass confirmation prompt if any. 
         # Usually delete requires --yes or input.
         # Assuming --force or --yes flag exists, or we pipe input.
         result = subprocess.run(
-            ["python3", "-m", "codegraphcontext.cli.main", "delete", str(dummy_dir), "--yes"],
+            [sys.executable, "-m", "codegraphcontext.cli.main", "--db", "kuzudb", "delete", str(dummy_dir), "--yes"],
             capture_output=True, text=True
         )
         # If --yes is not supported, this might fail/hang. Checking help first would be wise.
@@ -82,13 +89,13 @@ class TestUserJourneys:
         if result.returncode != 0:
              # Try interactive
              result = subprocess.run(
-                ["python3", "-m", "codegraphcontext.cli.main", "delete", str(dummy_dir)],
+                     [sys.executable, "-m", "codegraphcontext.cli.main", "--db", "kuzudb", "delete", str(dummy_dir)],
                 input="y\n", capture_output=True, text=True
             )
 
         assert result.returncode == 0
         
         # Verify gone
-        list_res = self.run_cgc(["list"])
+        list_res = self.run_cgc(["--db", "kuzudb", "list"])
         assert str(dummy_dir) not in list_res.stdout
 

@@ -409,9 +409,14 @@ class GraphBuilder:
                     warning_logger(f"Repository node not found for {file_data['repo_path']} during indexing of {file_name}.")
 
             try:
-                relative_path = str(Path(file_path_str).relative_to(Path(resolved_repo_str)))
+                repo_path_obj = Path(resolved_repo_str).resolve()
+                file_path_obj = Path(file_path_str).resolve()
+                relative_path = str(file_path_obj.relative_to(repo_path_obj))
             except ValueError:
-                relative_path = file_name
+                try:
+                    relative_path = os.path.relpath(str(file_path_obj), str(repo_path_obj))
+                except Exception:
+                    relative_path = file_name
 
             # ── UPSERT File node ─────────────────────────────────────────────
             session.run("""
@@ -420,9 +425,12 @@ class GraphBuilder:
             """, path=file_path_str, name=file_name, relative_path=relative_path, is_dependency=is_dependency)
 
             # ── Directory hierarchy + file link (one pass, sequential MERGEs) ─
-            file_path_obj = Path(file_path_str)
-            repo_path_obj = Path(resolved_repo_str)
-            relative_path_to_file = file_path_obj.relative_to(repo_path_obj)
+            file_path_obj = Path(file_path_str).resolve()
+            repo_path_obj = Path(resolved_repo_str).resolve()
+            try:
+                relative_path_to_file = file_path_obj.relative_to(repo_path_obj)
+            except ValueError:
+                relative_path_to_file = Path(os.path.relpath(str(file_path_obj), str(repo_path_obj)))
             parent_path = resolved_repo_str
             parent_label = 'Repository'
             for part in relative_path_to_file.parts[:-1]:
@@ -1678,13 +1686,13 @@ class GraphBuilder:
             )
 
             # Establish directory structure
-            file_path_obj = Path(file_path_str)
-            repo_path_obj = Path(repo_path_str)
+            file_path_obj = Path(file_path_str).resolve()
+            repo_path_obj = Path(repo_path_str).resolve()
             try:
                 relative_path_to_file = file_path_obj.relative_to(repo_path_obj)
             except ValueError:
                 # Fallback if not relative
-                relative_path_to_file = Path(file_path_obj.name)
+                relative_path_to_file = Path(os.path.relpath(str(file_path_obj), str(repo_path_obj)))
             
             parent_path = repo_path_str
             parent_label = 'Repository'

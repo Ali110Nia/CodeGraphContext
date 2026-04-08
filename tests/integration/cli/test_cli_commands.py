@@ -12,6 +12,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 import codegraphcontext.cli.main as cli_main
+import codegraphcontext.cli.cli_helpers as cli_helpers
 from codegraphcontext.cli.main import app, _load_credentials
 
 runner = CliRunner()
@@ -445,6 +446,62 @@ def test_find_content_falkordb_known_limitation_message(monkeypatch):
     assert "cgc find pattern" in result.output
 
 
+def test_db_flag_kuzudb_not_overwritten_by_context_database(monkeypatch):
+    class _Ctx:
+        mode = "named"
+        context_name = "test"
+        database = "neo4j"
+        db_path = None
+        cgcignore_path = None
+
+    class _FakeResult:
+        def single(self):
+            return {"repo_count": 0, "dep_count": 0}
+
+        def __iter__(self):
+            return iter([])
+
+    class _FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, *_args, **_kwargs):
+            return _FakeResult()
+
+    class _FakeDriver:
+        def session(self):
+            return _FakeSession()
+
+    class _FakeManager:
+        def get_driver(self):
+            return _FakeDriver()
+
+        def close_driver(self):
+            return None
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_helpers, "resolve_context", lambda *_args, **_kwargs: _Ctx())
+    monkeypatch.setattr(cli_helpers, "ensure_first_run_bootstrap", lambda *_args, **_kwargs: None)
+
+    def _fake_get_database_manager(*_args, **_kwargs):
+        # --db kuzudb must remain effective, even when context prefers neo4j.
+        assert os.environ.get("CGC_RUNTIME_DB_TYPE") == "kuzudb"
+        return _FakeManager()
+
+    monkeypatch.setattr(cli_helpers, "get_database_manager", _fake_get_database_manager)
+
+    # Use a clean environment so the command path is deterministic.
+    clean_env = {k: v for k, v in os.environ.items() if k not in {"CGC_RUNTIME_DB_TYPE", "DEFAULT_DATABASE", "DATABASE_TYPE"}}
+    with patch.dict(os.environ, clean_env, clear=True):
+        result = runner.invoke(app, ["--db", "kuzudb", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Database Connection Error" not in result.output
+
+
 class TestNeo4jDatabaseNameCLI:
     """Integration tests for NEO4J_DATABASE display in CLI commands."""
 
@@ -506,7 +563,10 @@ class TestNeo4jDatabaseNameCLI:
                 _load_credentials()
 
             printed = output.getvalue()
-            assert "Using database: Neo4j (database: mydb)" in printed
+            lowered = printed.lower()
+            assert "using database: neo4j" in lowered
+            assert "database: mydb" in lowered
+            assert "source:" in lowered
 
     @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
@@ -540,8 +600,10 @@ class TestNeo4jDatabaseNameCLI:
                 _load_credentials()
 
             printed = output.getvalue()
-            assert "Using database: Neo4j" in printed
-            assert "(database:" not in printed
+            lowered = printed.lower()
+            assert "using database: neo4j" in lowered
+            assert "source:" in lowered
+            assert "(database:" not in lowered
 
 
 def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
@@ -567,5 +629,7 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
         with patch("codegraphcontext.cli.main.console", Console(file=output, force_terminal=False)):
             _load_credentials()
 
-        assert "Using database: KùzuDB" in output.getvalue()
+        lowered = output.getvalue().lower()
+        assert "using database: kuzudb" in lowered
+        assert "source:" in lowered
 
