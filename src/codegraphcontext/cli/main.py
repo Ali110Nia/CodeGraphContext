@@ -354,6 +354,9 @@ def _load_credentials():
         dotenv_path = find_dotenv(usecwd=True, raise_error_if_not_found=False)
         if dotenv_path:
             _append_source(str(dotenv_path), dotenv_values(dotenv_path))
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
+
     # 2. <cwd>/.codegraphcontext/.env only (overrides global when distinct)
     try:
         local_cgc_env = codegraphcontext_dotenv_at_cwd(Path.cwd())

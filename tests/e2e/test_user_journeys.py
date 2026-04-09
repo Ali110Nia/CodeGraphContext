@@ -82,18 +82,14 @@ class TestUserJourneys:
         # Assuming --force or --yes flag exists, or we pipe input.
         result = subprocess.run(
             [sys.executable, "-m", "codegraphcontext.cli.main", "--db", "kuzudb", "delete", str(dummy_dir), "--yes"],
-            [sys.executable, "-m", "codegraphcontext.cli.main", "delete", str(dummy_dir), "--yes"],
             capture_output=True, text=True
         )
         # If --yes is not supported, this might fail/hang. Checking help first would be wise.
         # Let's assume interactive input:
         if result.returncode != 0:
-             # Try interactive
-             result = subprocess.run(
-                     [sys.executable, "-m", "codegraphcontext.cli.main", "--db", "kuzudb", "delete", str(dummy_dir)],
             # Try interactive
             result = subprocess.run(
-                [sys.executable, "-m", "codegraphcontext.cli.main", "delete", str(dummy_dir)],
+                [sys.executable, "-m", "codegraphcontext.cli.main", "--db", "kuzudb", "delete", str(dummy_dir)],
                 input="y\n", capture_output=True, text=True
             )
 
