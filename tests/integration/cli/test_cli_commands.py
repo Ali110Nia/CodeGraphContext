@@ -213,7 +213,6 @@ class _FakeCodeFinder:
 def kuzudb_env():
     env = {
         "DEFAULT_DATABASE": "kuzudb",
-        "DATABASE_TYPE": "kuzudb",
         "CGC_RUNTIME_DB_TYPE": "kuzudb",
     }
     with patch.dict(os.environ, env, clear=False):
@@ -530,9 +529,8 @@ class TestNeo4jDatabaseNameCLI:
             "bolt://localhost:7687", "neo4j", "password", database="mydb"
         )
 
-    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_displays_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
+    def test_load_credentials_displays_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
         """Test _load_credentials prints database name when NEO4J_DATABASE is set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -548,7 +546,6 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
-                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -568,9 +565,8 @@ class TestNeo4jDatabaseNameCLI:
             assert "database: mydb" in lowered
             assert "source:" in lowered
 
-    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_no_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
+    def test_load_credentials_no_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
         """Test _load_credentials prints Neo4j without database when NEO4J_DATABASE is not set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -585,7 +581,6 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
-                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -607,7 +602,6 @@ class TestNeo4jDatabaseNameCLI:
 
 
 def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli_main, "find_dotenv", lambda **_kwargs: None)
     monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda *_args, **_kwargs: None)
 
     monkeypatch.chdir(tmp_path)
@@ -615,7 +609,6 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
         k: v for k, v in os.environ.items()
         if k not in {
             "DEFAULT_DATABASE",
-            "DATABASE_TYPE",
             "CGC_RUNTIME_DB_TYPE",
             "NEO4J_URI",
             "NEO4J_USERNAME",

@@ -19,7 +19,6 @@ import logging
 import json
 import os
 from pathlib import Path
-from dotenv import load_dotenv, find_dotenv, set_key
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 
 from codegraphcontext.server import MCPServer
@@ -111,6 +110,7 @@ def mcp_setup():
     - VS Code, Cursor, Windsurf
     - Claude Desktop, Gemini CLI
     - Cline, RooCode, Amazon Q Developer
+    - OpenCode (prints stdio config + link to vendor docs)
     
     Works with FalkorDB by default (no database setup needed).
     """
@@ -293,17 +293,19 @@ def _load_credentials():
     2. Local `.env` in project directory (project-specific overrides)
     3. Global `~/.codegraphcontext/.env` (user defaults, including `cgc config set`)
     4. Local `mcp.json` env vars (project defaults)
+    1. Local `mcp.json` env vars (highest - explicit MCP server config)
+    2. ``<cwd>/.codegraphcontext/.env`` only (no parent-directory walk)
+    3. Global `~/.codegraphcontext/.env` (lowest - user defaults)
+
+    Step 2 skips duplicate loading when that file is the same path as the global file.
+    Arbitrary repo-root `.env` files are not loaded—only CodeGraphContext config paths.
     """
     from dotenv import dotenv_values
-    from codegraphcontext.cli.config_manager import ensure_config_dir
+    from codegraphcontext.cli.config_manager import (
+        ensure_config_dir,
+        codegraphcontext_dotenv_at_cwd,
+    )
     
-    # Capture DATABASE_TYPE from actual shell env BEFORE we load .env files.
-    # If the user ran `DATABASE_TYPE=falkordb cgc …` we must not let
-    # DEFAULT_DATABASE=neo4j in .env steal priority later.
-    shell_db_type = os.environ.get('DATABASE_TYPE')
-    if shell_db_type and not os.environ.get('CGC_RUNTIME_DB_TYPE'):
-        os.environ['CGC_RUNTIME_DB_TYPE'] = shell_db_type
-
     # Ensure config directory exists (lazy initialization)
     ensure_config_dir()
     
@@ -352,8 +354,16 @@ def _load_credentials():
         dotenv_path = find_dotenv(usecwd=True, raise_error_if_not_found=False)
         if dotenv_path:
             _append_source(str(dotenv_path), dotenv_values(dotenv_path))
+    # 2. <cwd>/.codegraphcontext/.env only (overrides global when distinct)
+    try:
+        local_cgc_env = codegraphcontext_dotenv_at_cwd(Path.cwd())
+        if local_cgc_env and local_cgc_env.resolve() != global_env_path.resolve():
+            config_sources.append(dotenv_values(str(local_cgc_env)))
+            config_source_names.append(str(local_cgc_env))
     except Exception as e:
-        console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
+        console.print(
+            f"[yellow]Warning: Could not load .codegraphcontext/.env at cwd: {e}[/yellow]"
+        )
     
     # Merge all configs with proper precedence (later sources override earlier ones)
     merged_config = {}
@@ -361,6 +371,11 @@ def _load_credentials():
         merged_config.update(config)
     
     # Apply merged config to environment, but never override runtime env.
+    # Apply merged config to environment.
+    # IMPORTANT: DB-selection keys set in the shell must win over .env defaults.
+    # E.g. `DEFAULT_DATABASE=falkordb cgc index …` must not be overridden by
+    # DEFAULT_DATABASE=neo4j sitting in ~/.codegraphcontext/.env
+    DB_OVERRIDE_KEYS = {"CGC_RUNTIME_DB_TYPE", "DEFAULT_DATABASE"}
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
             if key in runtime_env:
@@ -389,10 +404,8 @@ def _load_credentials():
     
     
     # Show which database is actually being used.
-    # When DATABASE_TYPE is explicitly set, trust it.  When it's left to auto-
-    # detect, call get_database_manager() so the banner can never lie: e.g. if
-    # falkordblite is installed but its native .so is missing (frozen bundle),
-    # the factory falls back to KùzuDB and we display that correctly.
+    # When CGC_RUNTIME_DB_TYPE or DEFAULT_DATABASE is set, trust it. Otherwise
+    # call get_database_manager() so the banner matches factory fallbacks.
     runtime_db = os.environ.get("CGC_RUNTIME_DB_TYPE")
     database_type = os.environ.get("DATABASE_TYPE")
     default_database = os.environ.get("DEFAULT_DATABASE")
@@ -411,6 +424,7 @@ def _load_credentials():
         db_source = key_source_map["DEFAULT_DATABASE"]
     else:
         db_source = "auto-detect"
+    explicit_db = runtime_db or os.environ.get("DEFAULT_DATABASE")
 
     if explicit_db:
         default_db = explicit_db.lower()
@@ -455,6 +469,9 @@ def _load_credentials():
             console.print(f"[cyan]Using database: falkordb-remote (source: {db_source}, host: {os.environ.get('FALKORDB_HOST')})[/cyan]")
         else:
             console.print(f"[cyan]Using database: falkordb (source: {db_source})[/cyan]")
+            console.print(
+                "[yellow]⚠ DEFAULT_DATABASE=falkordb-remote but FALKORDB_HOST not set.[/yellow]"
+            )
     else:
         console.print(f"[cyan]Using database: {default_db} (source: {db_source})[/cyan]")
 
@@ -714,10 +731,12 @@ def bundle_load(
 @app.command("export", rich_help_panel="Bundle Shortcuts")
 def export_shortcut(
     output: str = typer.Argument(..., help="Output path for the .cgc bundle file"),
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Specific repository path to export")
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Specific repository path to export"),
+    no_stats: bool = typer.Option(False, "--no-stats", help="Skip generating statistics in the bundle"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """Shortcut for 'cgc bundle export'"""
-    bundle_export(output, repo, False)
+    bundle_export(output, repo, no_stats, context)
 
 @app.command("load", rich_help_panel="Bundle Shortcuts")
 def load_shortcut(
@@ -838,6 +857,7 @@ def doctor():
     
     # 1. Check configuration
     console.print("[bold]1. Checking Configuration...[/bold]")
+    config = {}
     try:
         config = config_manager.load_config()
         
