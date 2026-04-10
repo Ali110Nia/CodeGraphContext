@@ -62,7 +62,7 @@ List all directories currently being watched.
 cgc watching
 ```
 
-**Note:** This command is primarily for MCP server mode. For CLI watch mode, check the terminal where you ran `cgc watch`.
+**Note:** This command is a CLI workflow. MCP is query-only and does not expose watcher control tools.
 
 ### `cgc unwatch <path>`
 
@@ -72,7 +72,7 @@ Stop watching a directory.
 cgc unwatch /path/to/project
 ```
 
-**Note:** This command is primarily for MCP server mode. For CLI watch mode, simply press `Ctrl+C` in the watch terminal.
+**Note:** This command is a CLI workflow. For active foreground sessions, you can also stop watching with `Ctrl+C`.
 
 ## Best Practices
 
@@ -163,14 +163,13 @@ $ # The watcher in Terminal 1 automatically picks up changes!
 If you see this message, it means the directory is already being watched. This can happen if:
 
 - You're running multiple watch commands
-- The MCP server is already watching this directory
 - A previous watch session didn't terminate cleanly
 
 **Solution:** Stop all watch processes and start fresh.
 
-## MCP Server vs CLI Watch Mode
+## CLI Watch Mode vs MCP Query Mode
 
-CodeGraphContext supports two watch modes:
+CodeGraphContext supports CLI watch mode and MCP query mode:
 
 ### CLI Watch Mode (This Guide)
 
@@ -180,13 +179,13 @@ CodeGraphContext supports two watch modes:
 - **Control:** Press `Ctrl+C` to stop
 - **Best for:** Single project, focused development
 
-### MCP Server Watch Mode
+### MCP Server Mode
 
-- **Command:** Via MCP tools (`watch_directory`, `unwatch_directory`, `list_watched_paths`)
-- **Runs:** In background (as part of MCP server)
-- **Use case:** IDE integration, multiple projects
-- **Control:** MCP tool calls
-- **Best for:** AI assistant integration, persistent watching
+- **Command:** `cgc mcp start --readonly`
+- **Runs:** As an MCP query server
+- **Use case:** IDE/agent queries against indexed data
+- **Control:** MCP query tools only
+- **Best for:** Read-only analysis
 
 ## Technical Details
 
@@ -217,5 +216,5 @@ This creates a seamless development experience where your AI assistant stays syn
 ## See Also
 
 - [CLI Reference](reference/cli_master.md) - Complete list of CLI commands
-- [MCP Tools](reference/mcp_master.md) - MCP server tools including watch functionality
+- [MCP Tools](reference/mcp_master.md) - MCP query tools
 - [Installation](getting-started/installation.md) - Getting started with CodeGraphContext

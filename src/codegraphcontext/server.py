@@ -1,37 +1,27 @@
 # src/codegraphcontext/server.py
-import urllib.parse
 import asyncio
 import json
-import importlib
-import stdlibs
 import sys
 import traceback
 import os
 import re
-from datetime import datetime
 from pathlib import Path
-from dataclasses import asdict
 
 from typing import Any, Dict, Coroutine, Optional, List, Tuple
 
 from .prompts import LLM_SYSTEM_PROMPT
 from .core import get_database_manager
-from .core.jobs import JobManager, JobStatus
-from .core.watcher import CodeWatcher
-from .tools.graph_builder import GraphBuilder
+from .core.jobs import JobManager
 from .tools.code_finder import CodeFinder
-from .tools.package_resolver import get_local_package_path
-from .utils.debug_log import debug_log, info_logger, error_logger, warning_logger, debug_logger
+from .utils.debug_log import info_logger, error_logger, debug_logger
 from .cli.config_manager import resolve_context
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
 from .tools.handlers import (
     analysis_handlers,
-    indexing_handlers,
     management_handlers,
     query_handlers,
-    watcher_handlers
 )
 
 DEFAULT_EDIT_DISTANCE = 2
@@ -75,15 +65,23 @@ class MCPServer:
     """
     The main MCP Server class.
     
-    This class orchestrates all the major components of the application, including:
-    - Database connection management (`DatabaseManager` or `FalkorDBManager`)
-    - Background job tracking (`JobManager`)
-    - File system watching for live updates (`CodeWatcher`)
-    - Tool handlers for graph building, code searching, etc.
-    - The main JSON-RPC communication loop for interacting with an AI assistant.
+    This class orchestrates the MCP query interface components, including:
+    - Database connection management
+    - Background job status tracking
+    - Read/query tool handlers
+    - The main JSON-RPC communication loop
     """
 
-    def __init__(self, loop=None, cwd: Path | None = None):
+    def __init__(
+        self,
+        loop=None,
+        cwd: Path | None = None,
+        *,
+        read_only_mode: bool = False,
+        db_read_only: bool = False,
+        context_override: str | None = None,
+        skip_local_context: bool = False,
+    ):
         """
         Initializes the MCP server and its components. 
         
@@ -92,36 +90,34 @@ class MCPServer:
                   running loop or creates a new one.
             cwd: Working directory used for context resolution. Defaults to Path.cwd().
         """
+        self.read_only_mode = bool(read_only_mode)
+        self.db_read_only = bool(db_read_only)
         try:
-            ctx = resolve_context(cwd=cwd or Path.cwd())
+            ctx = resolve_context(
+                cli_context=context_override,
+                cwd=cwd or Path.cwd(),
+                skip_local=skip_local_context,
+            )
             self.resolved_context = ctx
 
-            # Respect explicit runtime override (e.g. CLI --database) over
-            # context/default resolution to keep command behavior predictable.
-            if ctx.database and not os.environ.get('CGC_RUNTIME_DB_TYPE'):
+            # Enforce context-selected backend for this MCP process. This avoids
+            # stale runtime overrides leaking from previous CLI invocations.
+            if ctx.database:
                 os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
-            self.db_manager = get_database_manager(db_path=ctx.db_path)
+            self.db_manager = get_database_manager(
+                db_path=ctx.db_path,
+                read_only=self.db_read_only,
+            )
             self.db_manager.get_driver() 
         except ValueError as e:
             raise ValueError(f"Database configuration error: {e}")
 
-        # Initialize managers for jobs and file watching.
+        # Initialize managers for jobs and query tooling.
         self.job_manager = JobManager()
         
-        # Get the current event loop to pass to thread-sensitive components like the graph builder.
-        if loop is None:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        self.loop = loop
-
-        # Initialize all the tool handlers, passing them the necessary managers and the event loop.
-        self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
+        # Initialize query/search handlers.
         self.code_finder = CodeFinder(self.db_manager)
-        self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
         
         # Define the tool manifest that will be exposed to the AI assistant.
         self._init_tools()
@@ -130,7 +126,10 @@ class MCPServer:
         """
         Defines the complete tool manifest for the LLM.
         """
+        # MCP is intentionally query-only. Mutating tools are CLI-only.
         self.tools = TOOLS
+        if self.read_only_mode:
+            info_logger("MCP server running in read-only query mode.")
 
     def get_database_status(self) -> dict:
         """Returns the current connection status of the Neo4j database."""
@@ -164,51 +163,12 @@ class MCPServer:
     def list_indexed_repositories_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.list_indexed_repositories(self.code_finder, **args)
 
-    def delete_repository_tool(self, **args) -> Dict[str, Any]:
-        return management_handlers.delete_repository(self.graph_builder, **args)
-
     def check_job_status_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.check_job_status(self.job_manager, **args)
     
     def list_jobs_tool(self) -> Dict[str, Any]:
         return management_handlers.list_jobs(self.job_manager)
 
-    def list_watched_paths_tool(self, **args) -> Dict[str, Any]:
-        return watcher_handlers.list_watched_paths(self.code_watcher, **args)
-
-    def unwatch_directory_tool(self, **args) -> Dict[str, Any]:
-        return watcher_handlers.unwatch_directory(self.code_watcher, **args)
-
-    def add_code_to_graph_tool(self, **args) -> Dict[str, Any]:
-        return indexing_handlers.add_code_to_graph(
-            self.graph_builder, 
-            self.job_manager, 
-            self.loop, 
-            self.list_indexed_repositories_tool, # Pass the wrapper or bound method so it executes correctly
-            **args
-        )
-    
-    def add_package_to_graph_tool(self, **args) -> Dict[str, Any]:
-        return indexing_handlers.add_package_to_graph(
-            self.graph_builder, 
-            self.job_manager, 
-            self.loop, 
-            self.list_indexed_repositories_tool, 
-            **args
-        )
-
-    def watch_directory_tool(self, **args) -> Dict[str, Any]:
-        # watch_directory needs to call metadata tools.
-        return watcher_handlers.watch_directory(
-            self.code_watcher,
-            self.list_indexed_repositories_tool,
-            self.add_code_to_graph_tool,
-            **args
-        )
-
-    def load_bundle_tool(self, **args) -> Dict[str, Any]:
-        return management_handlers.load_bundle(self.code_finder, **args)
-    
     def search_registry_bundles_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.search_registry_bundles(self.code_finder, **args)
     
@@ -221,33 +181,112 @@ class MCPServer:
         Routes a tool call from the AI assistant to the appropriate handler function. 
         """
         tool_map: Dict[str, Coroutine] = {
-            "add_package_to_graph": self.add_package_to_graph_tool,
             "find_dead_code": self.find_dead_code_tool,
             "find_code": self.find_code_tool,
             "analyze_code_relationships": self.analyze_code_relationships_tool,
-            "watch_directory": self.watch_directory_tool,
             "execute_cypher_query": self.execute_cypher_query_tool,
-            "add_code_to_graph": self.add_code_to_graph_tool,
             "check_job_status": self.check_job_status_tool,
             "list_jobs": self.list_jobs_tool,
             "calculate_cyclomatic_complexity": self.calculate_cyclomatic_complexity_tool,
             "find_most_complex_functions": self.find_most_complex_functions_tool,
             "list_indexed_repositories": self.list_indexed_repositories_tool,
-            "delete_repository": self.delete_repository_tool,
             "visualize_graph_query": self.visualize_graph_query_tool,
-            "list_watched_paths": self.list_watched_paths_tool,
-            "unwatch_directory": self.unwatch_directory_tool,
-            "load_bundle": self.load_bundle_tool,
             "search_registry_bundles": self.search_registry_bundles_tool,
             "get_repository_stats": self.get_repository_stats_tool
         }
         handler = tool_map.get(tool_name)
         if handler:
+            args = self._normalize_repo_path_argument(args)
             # Run the synchronous tool function in a separate thread to avoid
             # blocking the main asyncio event loop.
             return await asyncio.to_thread(handler, **args)
         else:
             return {"error": f"Unknown tool: {tool_name}"}
+
+    def _normalize_repo_path_argument(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Best-effort normalization for repo_path to support multi-workspace MCP usage.
+
+        Many clients pass repo identifiers such as "Subproject-HMM" instead of an
+        absolute path. Most query filters rely on absolute path prefixes, so map
+        unambiguous short names to indexed repository absolute paths.
+        """
+        repo_path = args.get("repo_path")
+        if not isinstance(repo_path, str):
+            return args
+
+        candidate = repo_path.strip().rstrip("/")
+        if not candidate:
+            return args
+
+        # Already an absolute path (Unix/Windows)
+        if candidate.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", candidate):
+            return args
+
+        try:
+            repos = self.code_finder.list_indexed_repositories()
+        except Exception:
+            return args
+
+        norm = candidate.lower()
+        matches: List[str] = []
+        for repo in repos:
+            raw_path = str(repo.get("path", "")).strip().rstrip("/")
+            if not raw_path:
+                continue
+            repo_name = str(repo.get("name", "")).strip().lower()
+            path_lower = raw_path.lower()
+            base_name = Path(raw_path).name.lower()
+            if (
+                norm == repo_name
+                or norm == base_name
+                or norm == path_lower
+                or path_lower.endswith("/" + norm)
+            ):
+                matches.append(raw_path)
+
+        unique_matches = sorted(set(matches))
+        if len(unique_matches) == 1:
+            normalized = dict(args)
+            normalized["repo_path"] = unique_matches[0]
+            return normalized
+
+        # Support workspace-relative shorthand (e.g. "Subproject-HMM") even when
+        # indexed repository roots are nested paths like "/workspace/Subproject-HMM/x".
+        # In that case, use the workspace absolute prefix for STARTS WITH filters.
+        workspace_candidate = f"{WORKSPACE_PREFIX}{candidate.lstrip('/')}".rstrip("/")
+        workspace_hits: List[str] = []
+        for repo in repos:
+            raw_path = str(repo.get("path", "")).strip().rstrip("/")
+            if not raw_path:
+                continue
+            if raw_path == workspace_candidate or raw_path.startswith(workspace_candidate + "/"):
+                workspace_hits.append(raw_path)
+
+        if workspace_hits:
+            normalized = dict(args)
+            normalized["repo_path"] = workspace_candidate
+            return normalized
+
+        # Also support CWD-relative shorthand by mapping to absolute prefix.
+        try:
+            cwd_candidate = str((Path.cwd() / candidate).resolve()).rstrip("/")
+        except Exception:
+            cwd_candidate = None
+
+        if cwd_candidate:
+            cwd_hits: List[str] = []
+            for repo in repos:
+                raw_path = str(repo.get("path", "")).strip().rstrip("/")
+                if not raw_path:
+                    continue
+                if raw_path == cwd_candidate or raw_path.startswith(cwd_candidate + "/"):
+                    cwd_hits.append(raw_path)
+            if cwd_hits:
+                normalized = dict(args)
+                normalized["repo_path"] = cwd_candidate
+                return normalized
+
+        return args
 
     def _read_request_blocking(self) -> Tuple[Optional[dict], Optional[str]]:
         """Read one request from stdin supporting MCP framing and legacy line JSON-RPC."""
@@ -298,8 +337,6 @@ class MCPServer:
         """
         # info_logger("MCP Server is running. Waiting for requests...")
         print("MCP Server is running. Waiting for requests...", file=sys.stderr, flush=True)
-        self.code_watcher.start()
-        
         loop = asyncio.get_event_loop()
         while True:
             try:
@@ -380,5 +417,4 @@ class MCPServer:
     def shutdown(self):
         """Gracefully shuts down the server and its components."""
         debug_logger("Shutting down server...")
-        self.code_watcher.stop()
         self.db_manager.close_driver()

@@ -619,3 +619,48 @@ class TestWatcherIncrementalHandleModification:
             watcher._handle_modification("/fake/module.py")
 
         mock_gb._create_all_function_calls.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 10. GraphBuilder pre-scan dispatch regression
+# ---------------------------------------------------------------------------
+
+class TestPreScanDispatchRegression:
+    """Ensure mixed-language pre-scan executes all matching language branches."""
+
+    def test_prescan_runs_c_and_java_in_same_scan(self, tmp_path, monkeypatch):
+        from codegraphcontext.tools.graph_builder import GraphBuilder
+        from codegraphcontext.tools.languages import c as c_lang_module
+        from codegraphcontext.tools.languages import java as java_lang_module
+
+        c_file = tmp_path / "foo.c"
+        java_file = tmp_path / "Bar.java"
+        c_file.write_text("int main(){return 0;}\n")
+        java_file.write_text("class Bar {}\n")
+
+        calls = {"c": 0, "java": 0}
+
+        def _fake_pre_scan_c(files, _parser):
+            calls["c"] += 1
+            assert files == [c_file]
+            return {"c.symbol": [str(c_file)]}
+
+        def _fake_pre_scan_java(files, _parser):
+            calls["java"] += 1
+            assert files == [java_file]
+            return {"java.symbol": [str(java_file)]}
+
+        monkeypatch.setattr(c_lang_module, "pre_scan_c", _fake_pre_scan_c)
+        monkeypatch.setattr(java_lang_module, "pre_scan_java", _fake_pre_scan_java)
+
+        gb = GraphBuilder.__new__(GraphBuilder)
+        gb.parsers = {".c": "c", ".java": "java"}
+        gb._parsed_cache = {}
+        gb.get_parser = lambda _ext: object()
+
+        imports_map = gb._pre_scan_for_imports([c_file, java_file])
+
+        assert calls["c"] == 1
+        assert calls["java"] == 1
+        assert "c.symbol" in imports_map
+        assert "java.symbol" in imports_map

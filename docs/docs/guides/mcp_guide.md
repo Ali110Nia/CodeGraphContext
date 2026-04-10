@@ -28,11 +28,20 @@ cgc mcp setup
 
 Open your AI Chat and talk naturally. The AI now has a "tool" it can call.
 
+MCP is query-only. For indexing, watching, deleting, and bundle load/import, use CLI terminal commands.
+
 **Example Prompts:**
 
-*   "Please index the current directory." -> *AI calls `add_code_to_graph`*
-*   "Who calls the `process_payment` function?" -> *AI calls `analyze_callers`*
+*   "Who calls the `process_payment` function?" -> *AI calls `analyze_code_relationships`*
 *   "Find all dead code in `utils.py`." -> *AI calls `find_dead_code`*
+
+**CLI write examples (outside MCP):**
+
+```bash
+cgc index .
+cgc watch .
+cgc bundle load flask
+```
 
 ## 4. Troubleshooting
 

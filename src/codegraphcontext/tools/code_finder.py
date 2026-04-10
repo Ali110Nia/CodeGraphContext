@@ -19,13 +19,70 @@ class CodeFinder:
         self._is_neo4j = self._backend_type == 'neo4j'
         self._is_kuzu = self._backend_type == 'kuzudb'
         self._is_falkordb = self._backend_type in ('falkordb', 'falkordb-remote')
+        self._db_read_only = bool(getattr(db_manager, "read_only", False))
         self._kuzu_fts_index_by_label = {
             "Function": "function_code_search_fts",
             "Class": "class_code_search_fts",
             "Variable": "variable_code_search_fts",
         }
-        if self._is_kuzu:
+        if self._is_kuzu and not self._db_read_only:
             self._ensure_kuzu_fts_indexes()
+
+    def _normalize_repo_path_filter(self, repo_path: Optional[str]) -> Optional[str]:
+        """Normalize repo_path used in STARTS WITH filters for MCP/CLI parity."""
+        if not isinstance(repo_path, str):
+            return repo_path
+
+        candidate = repo_path.strip().rstrip("/")
+        if not candidate:
+            return None
+
+        if Path(candidate).is_absolute():
+            return candidate
+
+        repos = self.list_indexed_repositories()
+        norm = candidate.lower()
+        matches: List[str] = []
+        for repo in repos:
+            raw_path = str(repo.get("path", "")).strip().rstrip("/")
+            if not raw_path:
+                continue
+            repo_name = str(repo.get("name", "")).strip().lower()
+            base_name = Path(raw_path).name.lower()
+            path_lower = raw_path.lower()
+            if (
+                norm == repo_name
+                or norm == base_name
+                or norm == path_lower
+                or path_lower.endswith("/" + norm)
+            ):
+                matches.append(raw_path)
+
+        unique_matches = sorted(set(matches))
+        if len(unique_matches) == 1:
+            return unique_matches[0]
+
+        workspace_candidate = f"/workspace/{candidate.lstrip('/')}".rstrip("/")
+        if any(
+            str(repo.get("path", "")).strip().rstrip("/") == workspace_candidate
+            or str(repo.get("path", "")).strip().rstrip("/").startswith(workspace_candidate + "/")
+            for repo in repos
+        ):
+            return workspace_candidate
+
+        try:
+            cwd_candidate = str((Path.cwd() / candidate).resolve()).rstrip("/")
+        except Exception:
+            cwd_candidate = None
+
+        if cwd_candidate and any(
+            str(repo.get("path", "")).strip().rstrip("/") == cwd_candidate
+            or str(repo.get("path", "")).strip().rstrip("/").startswith(cwd_candidate + "/")
+            for repo in repos
+        ):
+            return cwd_candidate
+
+        return candidate
 
     def _ensure_kuzu_fts_indexes(self) -> None:
         """Best-effort Kuzu FTS index bootstrap for code search."""
@@ -335,6 +392,7 @@ class CodeFinder:
 
     def find_related_code(self, user_query: str, fuzzy_search: bool, edit_distance: int, repo_path: Optional[str] = None) -> Dict[str, Any]:
         """Find code related to a query using multiple search strategies"""
+        repo_path = self._normalize_repo_path_filter(repo_path)
         # FalkorDB does not support Lucene-style fuzzy edit-distance syntax (e.g. term~2).
         # On FalkorDB, always use the plain query so that the CONTAINS-based fallbacks work.
         if fuzzy_search and (self._is_falkordb or self._is_kuzu):
@@ -689,6 +747,7 @@ class CodeFinder:
     
     def find_dead_code(self, exclude_decorated_with: Optional[List[str]] = None, repo_path: Optional[str] = None) -> Dict[str, Any]:
         """Find potentially unused functions (not called by other functions in the project), optionally excluding those with specific decorators."""
+        repo_path = self._normalize_repo_path_filter(repo_path)
         if exclude_decorated_with is None:
             exclude_decorated_with = []
 
@@ -937,40 +996,131 @@ class CodeFinder:
             return result.data()
     
     def find_module_dependencies(self, module_name: str, repo_path: Optional[str] = None) -> Dict[str, Any]:
-        """Find all dependencies and dependents of a module"""
+        """Find grouped module usage via imports and related calls.
+
+        Returns a compact payload with only:
+        - imports: files importing the module
+        - calls: call edges from importer files that look related to the import alias/name
+        """
+        import_limit = 30
+        call_limit = 30
+        target = (module_name or "").strip()
+        is_path_target = "/" in target or target.endswith(".py")
         with self.driver.session() as session:
-            repo_filter = "AND file.path STARTS WITH $repo_path" if repo_path else ""
-            # Find files that import this module (who imports this module)
-            importers_result = session.run(f"""
-                MATCH (file:File)-[imp:IMPORTS]->(module:Module {{name: $module_name}})
-                WHERE 1=1 {repo_filter}
-                OPTIONAL MATCH (repo:Repository)-[:CONTAINS]->(file)
-                RETURN DISTINCT
-                    file.path as importer_file_path,
-                    imp.line_number as import_line_number,
-                    file.is_dependency as file_is_dependency,
-                    repo.name as repository_name
-                ORDER BY file.is_dependency ASC, file.path
-                LIMIT 50
-            """, module_name=module_name, repo_path=repo_path)
-            
-            # Find modules that are imported by files that also import the target module
-            # This helps understand what this module is typically used with
-            imports_result = session.run(f"""
-                MATCH (file:File)-[:IMPORTS]->(target_module:Module {{name: $module_name}})
-                MATCH (file)-[imp:IMPORTS]->(other_module:Module)
-                WHERE other_module <> target_module {repo_filter}
-                RETURN DISTINCT
-                    other_module.name as imported_module,
-                    imp.alias as import_alias
-                ORDER BY other_module.name
-                LIMIT 50
-            """, module_name=module_name, repo_path=repo_path)
-            
+            query_params: Dict[str, Any] = {"module_name": target}
+            repo_filter = ""
+            caller_repo_filter = ""
+            file_repo_filter_f = ""
+            if repo_path:
+                if Path(repo_path).is_absolute():
+                    repo_filter = "AND file.path STARTS WITH $repo_path"
+                    caller_repo_filter = "AND caller.path STARTS WITH $repo_path"
+                    file_repo_filter_f = "AND f.path STARTS WITH $repo_path"
+                    query_params["repo_path"] = repo_path
+                else:
+                    # MCP callers sometimes pass repository names (e.g. "Subproject-HMM")
+                    # instead of absolute paths. Match by path segment in that case.
+                    repo_filter = "AND file.path CONTAINS $repo_path_segment"
+                    caller_repo_filter = "AND caller.path CONTAINS $repo_path_segment"
+                    file_repo_filter_f = "AND f.path CONTAINS $repo_path_segment"
+                    query_params["repo_path_segment"] = f"/{repo_path.strip('/')}/"
+            if is_path_target:
+                if Path(target).is_absolute():
+                    query_params["module_path"] = target
+                    path_pred = "f.path = $module_path"
+                    caller_path_pred = "caller.path = $module_path"
+                else:
+                    # Accept both bare relative path and /workspace-prefixed storage.
+                    query_params["module_path_end"] = target
+                    path_pred = (
+                        "f.path ENDS WITH $module_path_end "
+                        "OR f.path ENDS WITH CONCAT('/', $module_path_end)"
+                    )
+                    caller_path_pred = (
+                        "caller.path ENDS WITH $module_path_end "
+                        "OR caller.path ENDS WITH CONCAT('/', $module_path_end)"
+                    )
+
+                # For file-path targets, report what this file imports and what it calls.
+                imports_result = session.run(f"""
+                    MATCH (f:File)-[imp:IMPORTS]->(module:Module)
+                    WHERE ({path_pred}) {file_repo_filter_f}
+                    RETURN DISTINCT
+                        f.path as importer_file_path,
+                        imp.line_number as import_line_number,
+                        imp.alias as import_alias,
+                        module.name as imported_module,
+                        module.full_import_name as imported_full_name,
+                        f.is_dependency as file_is_dependency
+                    ORDER BY file_is_dependency ASC, importer_file_path, import_line_number
+                    LIMIT {import_limit}
+                """, **query_params)
+
+                calls_result = session.run(f"""
+                    MATCH (caller:Function)-[call:CALLS]->(callee)
+                    WHERE ({caller_path_pred})
+                      {caller_repo_filter}
+                    RETURN DISTINCT
+                        caller.name as caller_function,
+                        caller.path as caller_file_path,
+                        call.line_number as call_line_number,
+                        call.full_call_name as full_call_name,
+                        callee.name as callee_name,
+                        callee.path as callee_file_path,
+                        'file_scope' as resolution_source
+                    ORDER BY caller_file_path, call_line_number
+                    LIMIT {call_limit}
+                """, **query_params)
+            else:
+                # Group 1: files importing this module by module symbol/name.
+                imports_result = session.run(f"""
+                    MATCH (file:File)-[imp:IMPORTS]->(module:Module {{name: $module_name}})
+                    WHERE 1=1 {repo_filter}
+                    RETURN DISTINCT
+                        file.path as importer_file_path,
+                        imp.line_number as import_line_number,
+                        imp.alias as import_alias,
+                        module.name as imported_module,
+                        file.is_dependency as file_is_dependency
+                    ORDER BY file_is_dependency ASC, importer_file_path, import_line_number
+                    LIMIT {import_limit}
+                """, **query_params)
+
+                # Group 2: call usage from importer files.
+                # Heuristic by design: derive base symbol from import alias/name and match full_call_name prefix.
+                calls_result = session.run(f"""
+                    MATCH (file:File)-[imp:IMPORTS]->(module:Module {{name: $module_name}})
+                    WHERE 1=1 {repo_filter}
+                    WITH DISTINCT file, imp, module,
+                        coalesce(imp.alias, module.name) as primary_base,
+                        module.name as module_base
+                    MATCH (caller:Function {{path: file.path}})-[call:CALLS]->(callee)
+                    WHERE (
+                        call.full_call_name = primary_base OR
+                        call.full_call_name STARTS WITH CONCAT(primary_base, '.') OR
+                        call.full_call_name = module_base OR
+                        call.full_call_name STARTS WITH CONCAT(module_base, '.')
+                    )
+                    RETURN DISTINCT
+                        caller.name as caller_function,
+                        caller.path as caller_file_path,
+                        call.line_number as call_line_number,
+                        call.full_call_name as full_call_name,
+                        callee.name as callee_name,
+                        callee.path as callee_file_path,
+                        'heuristic' as resolution_source
+                    ORDER BY caller_file_path, call_line_number
+                    LIMIT {call_limit}
+                """, **query_params)
+
+            imports = imports_result.data()
+            calls = calls_result.data()
             return {
-                "module_name": module_name,
-                "importers": importers_result.data(),
-                "imports": imports_result.data()
+                "module_name": target,
+                "import_count": len(imports),
+                "call_count": len(calls),
+                "imports": imports,
+                "calls": calls,
             }
     
     def find_variable_usage_scope(self, variable_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> Dict[str, Any]:
@@ -1038,6 +1188,7 @@ class CodeFinder:
     
     def analyze_code_relationships(self, query_type: str, target: str, context: Optional[str] = None, repo_path: Optional[str] = None) -> Dict[str, Any]:
         """Main method to analyze different types of code relationships with fixed return types"""
+        repo_path = self._normalize_repo_path_filter(repo_path)
         query_type = query_type.lower().strip()
         
         try:
@@ -1146,7 +1297,10 @@ class CodeFinder:
                 results = self.find_module_dependencies(target, repo_path=repo_path)
                 return {
                     "query_type": "module_dependencies", "target": target, "results": results,
-                    "summary": f"Module '{target}' is imported by {len(results['imported_by_files'])} files"
+                    "summary": (
+                        f"Module '{target}' usage: {results.get('import_count', 0)} imports, "
+                        f"{results.get('call_count', 0)} related calls"
+                    )
                 }
             
             elif query_type in ["variable_scope", "var_scope", "variable_usage_scope"]:
@@ -1175,6 +1329,7 @@ class CodeFinder:
 
     def get_cyclomatic_complexity(self, function_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> Optional[Dict]:
         """Get the cyclomatic complexity of a function."""
+        repo_path = self._normalize_repo_path_filter(repo_path)
         with self.driver.session() as session:
             repo_filter = "AND f.path STARTS WITH $repo_path" if repo_path else ""
             if path:
@@ -1202,6 +1357,7 @@ class CodeFinder:
 
     def find_most_complex_functions(self, limit: int = 10, repo_path: Optional[str] = None) -> List[Dict]:
         """Find the most complex functions based on cyclomatic complexity."""
+        repo_path = self._normalize_repo_path_filter(repo_path)
         with self.driver.session() as session:
             repo_filter = "AND f.path STARTS WITH $repo_path" if repo_path else ""
             path_ignore = cypher_path_not_under_ignore_dirs("f.path")

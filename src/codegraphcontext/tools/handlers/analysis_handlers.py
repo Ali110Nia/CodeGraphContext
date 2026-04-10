@@ -1,4 +1,5 @@
-from typing import Any, Dict
+import re
+from typing import Any, Dict, List
 from ..code_finder import CodeFinder
 from ...utils.debug_log import debug_log
 
@@ -77,12 +78,30 @@ def analyze_code_relationships(code_finder: CodeFinder, **args) -> Dict[str, Any
     
     try:
         debug_log(f"Analyzing relationships: {query_type} for {target}, repo_path={repo_path}")
-        results = code_finder.analyze_code_relationships(query_type, target, context, repo_path=repo_path)
-        
-        return {
-            "success": True, "query_type": query_type, "target": target,
-            "context": context, "results": results
-        }
+        analysis = code_finder.analyze_code_relationships(query_type, target, context, repo_path=repo_path)
+        if not isinstance(analysis, dict):
+            return {
+                "success": True,
+                "query_type": query_type,
+                "target": target,
+                "context": context,
+                "results": analysis,
+            }
+
+        response: Dict[str, Any] = {"success": "error" not in analysis}
+
+        # Prefer analyzer-provided metadata, fall back to request args.
+        response["query_type"] = analysis.get("query_type", query_type)
+        response["target"] = analysis.get("target", target)
+        response["context"] = analysis.get("context", context)
+
+        # Keep payload flat at top-level to avoid results.results nesting.
+        for key, value in analysis.items():
+            if key in {"query_type", "target", "context"}:
+                continue
+            response[key] = value
+
+        return response
     
     except Exception as e:
         debug_log(f"Error analyzing relationships: {str(e)}")
@@ -101,10 +120,50 @@ def find_code(code_finder: CodeFinder, **args) -> Dict[str, Any]:
     if fuzzy_search:
         # Assuming minimal normalization is fine here if not method available
         query = query.lower().replace("_", " ").strip()
+
+    def _candidate_queries(raw: str) -> List[str]:
+        candidates: List[str] = []
+        base = (raw or "").strip()
+        if not base:
+            return candidates
+        candidates.append(base)
+
+        class_match = re.match(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*$", base)
+        if class_match:
+            candidates.append(class_match.group(1))
+
+        def_match = re.match(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", base)
+        if def_match:
+            candidates.append(def_match.group(1))
+
+        # Preserve order but drop duplicates.
+        uniq: List[str] = []
+        seen = set()
+        for q in candidates:
+            if q not in seen:
+                uniq.append(q)
+                seen.add(q)
+        return uniq
         
     try:
         debug_log(f"Finding code for query: {query} with fuzzy_search={fuzzy_search}, edit_distance={edit_distance}, repo_path={repo_path}")
-        results = code_finder.find_related_code(query, fuzzy_search, edit_distance, repo_path=repo_path)
+
+        candidates = _candidate_queries(query)
+        if not candidates:
+            return {"error": "Query cannot be empty."}
+
+        best_results = None
+        best_count = -1
+        for candidate in candidates:
+            result = code_finder.find_related_code(candidate, fuzzy_search, edit_distance, repo_path=repo_path)
+            total = int(result.get("total_matches", 0))
+            if total > best_count:
+                best_results = result
+                best_count = total
+            if total > 0:
+                break
+
+        results = best_results if best_results is not None else code_finder.find_related_code(query, fuzzy_search, edit_distance, repo_path=repo_path)
 
         return {"success": True, "query": query, "results": results}
     

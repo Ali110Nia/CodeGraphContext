@@ -1,7 +1,7 @@
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from codegraphcontext.server import MCPServer
 
 class TestMCPServer:
@@ -16,10 +16,8 @@ class TestMCPServer:
             mock_db = MagicMock()
             mock_get_db.return_value = mock_db
             
-            with patch('codegraphcontext.server.JobManager') as mock_job_cls, \
-                 patch('codegraphcontext.server.GraphBuilder'), \
-                 patch('codegraphcontext.server.CodeFinder'), \
-                 patch('codegraphcontext.server.CodeWatcher'):
+            with patch('codegraphcontext.server.JobManager'), \
+                 patch('codegraphcontext.server.CodeFinder'):
                 
                 server = MCPServer()
                 # Mock handle_tool_call to avoid needing to mock every handler import
@@ -52,21 +50,11 @@ class TestMCPServer:
         
         asyncio.run(run_test())
 
-    def test_add_code_to_graph_routing(self, mock_server):
-        """Verify routing for complex tools."""
+    def test_removed_write_tool_returns_unknown_tool(self, mock_server):
+        """Write/mutating MCP tools are removed from the MCP surface."""
         async def run_test():
-            # Mock the handler function imported in server.py
-            with patch('codegraphcontext.server.indexing_handlers.add_code_to_graph') as mock_handler:
-                mock_handler.return_value = {"job_id": "123"}
-                
-                # The tool on the server instance simply calls this handler
-                # We must ensure the arguments are passed correctly (including wrappers)
-                
-                result = await mock_server.handle_tool_call("add_code_to_graph", {"path": "."})
-                
-                # We can't strictly assert called_once because arguments are complex (bound methods)
-                # But we can check result
-                assert result == {"job_id": "123"}
+            result = await mock_server.handle_tool_call("add_code_to_graph", {"path": "."})
+            assert "error" in result
+            assert "Unknown tool" in result["error"]
         
         asyncio.run(run_test())
-

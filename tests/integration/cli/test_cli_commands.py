@@ -167,8 +167,8 @@ class _FakeCodeFinder:
 
     def find_module_dependencies(self, *_args, **_kwargs):
         return {
-            "importers": [{"importer_file_path": "repo/main.py", "import_line_number": 1}],
-            "imports": [{"imported_module": "json", "import_line_number": 1}],
+            "imports": [{"importer_file_path": "repo/main.py", "import_line_number": 1, "import_alias": "json"}],
+            "calls": [{"caller_function": "main", "caller_file_path": "repo/main.py", "call_line_number": 2, "full_call_name": "json.loads", "callee_name": "loads", "callee_file_path": "repo/json.py"}],
         }
 
     def find_class_hierarchy(self, *_args, **_kwargs):
@@ -241,6 +241,20 @@ def cli_test_stubs(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "watch_helper", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli_main, "unwatch_helper", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli_main, "list_watching_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "_promote_db_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "resolve_context",
+        lambda **_kwargs: types.SimpleNamespace(database="kuzudb", db_path=str(tmp_path / "db" / "kuzudb")),
+    )
+    monkeypatch.setattr(cli_main, "watch_service_install_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "watch_service_status_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "watch_service_stop_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "watch_service_remove_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "mcp_service_install_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "mcp_service_status_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "mcp_service_stop_helper", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "mcp_service_remove_helper", lambda *_args, **_kwargs: None)
 
     fake_db = _FakeDBManager()
     monkeypatch.setattr(cli_main, "_initialize_services", lambda *_args, **_kwargs: (fake_db, _FakeGraphBuilder(), _FakeCodeFinder()))
@@ -315,7 +329,7 @@ def test_cli_inventory_grouped_from_source():
     assert inventory["find"] == {"name", "pattern", "type", "variable", "content", "decorator", "argument"}
     assert inventory["analyze"] == {"calls", "callers", "chain", "deps", "tree", "complexity", "dead-code", "overrides", "variable"}
     if "context" in inventory:
-        assert inventory["context"] == {"list", "create", "delete", "mode", "default"}
+        assert inventory["context"] == {"list", "create", "delete", "mode", "default", "promote-db"}
 
 
 def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
@@ -350,6 +364,14 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
         ["watch", "."],
         ["unwatch", "."],
         ["watching"],
+        ["watch-service-install", ".", "--context", "ci-context", "--unit-name", "cgc-watch-ci.service", "--no-enable", "--no-start"],
+        ["watch-service-status", "cgc-watch-ci.service"],
+        ["watch-service-stop", "cgc-watch-ci.service"],
+        ["watch-service-remove", "cgc-watch-ci.service", "--keep-unit-file"],
+        ["mcp-service-install", "--context", "ci-context", "--unit-name", "cgc-mcp-ci.service", "--no-enable", "--no-start"],
+        ["mcp-service-status", "cgc-mcp-ci.service"],
+        ["mcp-service-stop", "cgc-mcp-ci.service"],
+        ["mcp-service-remove", "cgc-mcp-ci.service", "--keep-unit-file"],
         ["find", "name", "foo"],
         ["find", "pattern", "foo"],
         ["find", "type", "function"],
@@ -390,6 +412,7 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
                 ["context", "delete", "ci-context"],
                 ["context", "mode", "single"],
                 ["context", "default", "ci-context"],
+                ["context", "promote-db", "--from-context", "ci-context", "--to-context", "ci-context"],
             ]
         )
 
@@ -569,3 +592,69 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
 
         assert "Using database: KùzuDB" in output.getvalue()
 
+
+def test_mcp_start_defaults_to_readonly(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "resolve_context",
+        lambda **_kwargs: types.SimpleNamespace(database="kuzudb", db_path=str(tmp_path / "db" / "kuzudb")),
+    )
+
+    def _fake_lock(_path, *, read_only):
+        captured["lock_read_only"] = read_only
+        return 99
+
+    class _FakeMCPServer:
+        def __init__(self, *_args, **kwargs):
+            captured["server_read_only_mode"] = kwargs.get("read_only_mode")
+            captured["server_db_read_only"] = kwargs.get("db_read_only")
+
+        async def run(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+    monkeypatch.setattr(cli_main, "acquire_mcp_lock", _fake_lock)
+    monkeypatch.setattr(cli_main, "MCPServer", _FakeMCPServer)
+
+    closed_fds = []
+    monkeypatch.setattr(cli_main.os, "close", lambda fd: closed_fds.append(fd))
+
+    result = runner.invoke(app, ["mcp", "start"])
+
+    assert result.exit_code == 0
+    assert captured["lock_read_only"] is True
+    assert captured["server_read_only_mode"] is True
+    assert captured["server_db_read_only"] is True
+    assert 99 in closed_fds
+
+
+def test_index_fails_fast_on_write_lock_contention(monkeypatch, tmp_path):
+    calls = {"index_helper_called": False}
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "resolve_context",
+        lambda **_kwargs: types.SimpleNamespace(database="kuzudb", db_path=str(tmp_path / "db" / "kuzudb")),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "acquire_mcp_lock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(cli_main.MCPLockError("busy")),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "index_helper",
+        lambda *_args, **_kwargs: calls.__setitem__("index_helper_called", True),
+    )
+
+    result = runner.invoke(app, ["index", "."])
+
+    assert result.exit_code == 1
+    assert "DB Lock Error" in result.output
+    assert calls["index_helper_called"] is False
