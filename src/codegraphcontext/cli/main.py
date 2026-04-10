@@ -18,14 +18,17 @@ import asyncio
 import logging
 import json
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv, set_key
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 
 from codegraphcontext.server import MCPServer
 from codegraphcontext.core.database import DatabaseManager
+from codegraphcontext.core.mcp_lock import acquire_mcp_lock, lock_path_for_db, MCPLockError
 from .setup_wizard import run_neo4j_setup_wizard, configure_mcp_client
 from . import config_manager
+from .config_manager import resolve_context
 # Import the new helper functions
 from .cli_helpers import (
     index_helper,
@@ -46,6 +49,10 @@ from .cli_helpers import (
     watch_service_status_helper,
     watch_service_stop_helper,
     watch_service_remove_helper,
+    mcp_service_install_helper,
+    mcp_service_status_helper,
+    mcp_service_stop_helper,
+    mcp_service_remove_helper,
 )
 
 # Set the log level for the noisy neo4j, asyncio, and urllib3 loggers to keep the output clean.
@@ -91,6 +98,144 @@ console = Console(stderr=True)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
 
+def _acquire_write_db_lock(context: Optional[str] = None) -> Optional[int]:
+    """
+    Acquire an exclusive DB lock for write operations when running on KùzuDB.
+    This prevents silent lock contention with active MCP reader/writer processes.
+    """
+    resolved = resolve_context(cli_context=context, cwd=Path.cwd())
+    if resolved.database != "kuzudb" or not resolved.db_path:
+        return None
+
+    mcp_lock_path = lock_path_for_db(resolved.db_path)
+    try:
+        lock_fd = acquire_mcp_lock(mcp_lock_path, read_only=False)
+        console.print(f"[dim]Acquired write lock: {mcp_lock_path}[/dim]")
+        return lock_fd
+    except MCPLockError as e:
+        console.print(
+            "[bold red]DB Lock Error:[/bold red] "
+            "Cannot run a write command while MCP is active on this DB."
+        )
+        console.print(f"[dim]{e}[/dim]")
+        raise typer.Exit(code=1)
+
+
+def _promote_db_snapshot(source_db_path: Path, target_db_path: Path) -> None:
+    """Copy source DB snapshot into target DB path atomically where possible."""
+    source_db_path = source_db_path.resolve()
+    target_db_path = target_db_path.resolve()
+
+    if not source_db_path.exists():
+        raise RuntimeError(f"Source DB path does not exist: {source_db_path}")
+
+    target_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Directory-based DB layout
+    if source_db_path.is_dir():
+        tmp_target = target_db_path.with_name(target_db_path.name + ".tmp_promote")
+        if tmp_target.exists():
+            if tmp_target.is_dir():
+                shutil.rmtree(tmp_target)
+            else:
+                tmp_target.unlink()
+        shutil.copytree(source_db_path, tmp_target)
+        if target_db_path.exists():
+            if target_db_path.is_dir():
+                shutil.rmtree(target_db_path)
+            else:
+                target_db_path.unlink()
+        os.replace(tmp_target, target_db_path)
+        return
+
+    # File-based DB layout (e.g., Kuzu/falkordb file). Also copy sibling metadata files.
+    stem = source_db_path.name
+    source_files = [source_db_path]
+    for sibling in source_db_path.parent.glob(stem + ".*"):
+        # Never promote live lock files.
+        if sibling.name.endswith(".mcp.lock"):
+            continue
+        source_files.append(sibling)
+
+    for src_file in source_files:
+        rel_name = src_file.name
+        dst_file = target_db_path.parent / rel_name
+        tmp_file = dst_file.with_name(dst_file.name + ".tmp_promote")
+        shutil.copy2(src_file, tmp_file)
+        os.replace(tmp_file, dst_file)
+
+
+def _is_truthy(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_auto_promote_after_write(
+    context: Optional[str],
+    write_performed: bool,
+    action: str,
+) -> None:
+    """
+    Auto-promote build DB -> read DB after successful mutating commands.
+
+    Controlled by env vars:
+    - CGC_MCP_AUTO_PROMOTE: true|false (default: true)
+    - CGC_MCP_BUILD_CONTEXT: source context name (default: mcp-build)
+    - CGC_MCP_READ_CONTEXT: target context name (default: mcp-read)
+    """
+    auto_promote_enabled = _is_truthy(os.environ.get("CGC_MCP_AUTO_PROMOTE", "true"))
+    if not auto_promote_enabled or not write_performed:
+        return
+
+    build_context = os.environ.get("CGC_MCP_BUILD_CONTEXT", "mcp-build")
+    read_context = os.environ.get("CGC_MCP_READ_CONTEXT", "mcp-read")
+
+    try:
+        active_ctx = resolve_context(cli_context=context, cwd=Path.cwd(), skip_local=True)
+    except Exception as e:
+        console.print(f"[yellow]Auto-promote skipped ({action}): context resolution failed: {e}[/yellow]")
+        return
+
+    # Only auto-promote when command is operating on the configured build context.
+    if active_ctx.mode != "named" or active_ctx.context_name != build_context:
+        return
+
+    if build_context == read_context:
+        console.print(
+            f"[yellow]Auto-promote skipped ({action}): build/read contexts are the same ({build_context}).[/yellow]"
+        )
+        return
+
+    src = resolve_context(cli_context=build_context, cwd=Path.cwd(), skip_local=True)
+    dst = resolve_context(cli_context=read_context, cwd=Path.cwd(), skip_local=True)
+
+    if src.database != dst.database:
+        console.print(
+            f"[yellow]Auto-promote skipped ({action}): context DB mismatch "
+            f"({build_context}={src.database}, {read_context}={dst.database}).[/yellow]"
+        )
+        return
+
+    dst_lock_fd = None
+    try:
+        if dst.database == "kuzudb" and dst.db_path:
+            dst_lock_fd = acquire_mcp_lock(lock_path_for_db(dst.db_path), read_only=False)
+        _promote_db_snapshot(Path(src.db_path), Path(dst.db_path))
+        console.print(
+            f"[green]Auto-promoted DB snapshot after {action}: {build_context} -> {read_context}[/green]"
+        )
+    except MCPLockError as e:
+        console.print(
+            f"[yellow]Auto-promote skipped ({action}): target context is busy (MCP lock): {e}[/yellow]"
+        )
+    except Exception as e:
+        console.print(f"[yellow]Auto-promote failed after {action}: {e}[/yellow]")
+    finally:
+        if dst_lock_fd is not None:
+            os.close(dst_lock_fd)
+
+
 def get_version() -> str:
     """
     Try to read version from the installed package metadata.
@@ -123,7 +268,30 @@ def mcp_setup():
     configure_mcp_client()
 
 @mcp_app.command("start")
-def mcp_start():
+def mcp_start(
+    context: Optional[str] = typer.Option(
+        None,
+        "--context",
+        "-c",
+        help="Named context for MCP shared DB (recommended for multi-workspace use).",
+    ),
+    global_context: bool = typer.Option(
+        True,
+        "--global-context/--cwd-context",
+        help=(
+            "Ignore local .codegraphcontext in CWD and resolve against shared/global "
+            "context mode (default: enabled)."
+        ),
+    ),
+    readonly: bool = typer.Option(
+        True,
+        "--readonly/--read-write",
+        help=(
+            "Run MCP in read-only mode (default). "
+            "Read-only mode disables mutating tools and opens KuzuDB as read-only."
+        ),
+    ),
+):
     """
     Start the CodeGraphContext MCP server.
     
@@ -134,11 +302,44 @@ def mcp_start():
     _load_credentials()
 
     server = None
+    mcp_lock_fd = None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        server = MCPServer(loop=loop, cwd=Path.cwd())
+        if not readonly:
+            console.print(
+                "[bold red]Read-write MCP mode is disabled by policy.[/bold red]\n"
+                "Use terminal CLI commands (index/delete/watch/etc.) for write operations."
+            )
+            raise typer.Exit(code=2)
+
+        resolved = resolve_context(
+            cli_context=context,
+            cwd=Path.cwd(),
+            skip_local=global_context,
+        )
+        console.print("[cyan]MCP mode:[/cyan] read-only (strict)")
+        console.print(
+            "[yellow]Write tools are disabled in MCP. Use terminal CLI commands for writes.[/yellow]"
+        )
+        context_label = context or ("global/shared" if global_context else "cwd-local")
+        console.print(f"[cyan]MCP context:[/cyan] {context_label}")
+
+        if resolved.database == "kuzudb" and resolved.db_path:
+            mcp_lock_path = lock_path_for_db(resolved.db_path)
+            mcp_lock_fd = acquire_mcp_lock(mcp_lock_path, read_only=readonly)
+
+        server = MCPServer(
+            loop=loop,
+            cwd=Path.cwd(),
+            read_only_mode=readonly,
+            db_read_only=readonly and resolved.database == "kuzudb",
+            context_override=context,
+            skip_local_context=global_context,
+        )
         loop.run_until_complete(server.run())
+    except MCPLockError as e:
+        console.print(f"[bold red]MCP Lock Error:[/bold red] {e}")
     except ValueError as e:
         # This typically happens if credentials are still not found after all checks.
         console.print(f"[bold red]Configuration Error:[/bold red] {e}")
@@ -150,10 +351,29 @@ def mcp_start():
         # Ensure server and event loop are properly closed.
         if server:
             server.shutdown()
+        if mcp_lock_fd is not None:
+            os.close(mcp_lock_fd)
         loop.close()
 
 @mcp_app.command("tools")
-def mcp_tools():
+def mcp_tools(
+    context: Optional[str] = typer.Option(
+        None,
+        "--context",
+        "-c",
+        help="Named context for MCP shared DB.",
+    ),
+    global_context: bool = typer.Option(
+        True,
+        "--global-context/--cwd-context",
+        help="Resolve tools against shared/global context by default.",
+    ),
+    readonly: bool = typer.Option(
+        True,
+        "--readonly/--read-write",
+        help="Show MCP tools for read-only mode (default) or read-write mode.",
+    ),
+):
     """
     List all available MCP tools.
     
@@ -163,7 +383,14 @@ def mcp_tools():
     console.print("[bold green]Available MCP Tools:[/bold green]")
     try:
         # Instantiate the server to access the tool definitions.
-        server = MCPServer()
+        if not readonly:
+            console.print("[yellow]Read-write MCP tools are disabled by policy; showing read-only set instead.[/yellow]")
+        server = MCPServer(
+            read_only_mode=True,
+            db_read_only=True,
+            context_override=context,
+            skip_local_context=global_context,
+        )
         tools = server.tools.values()
 
         table = Table(show_header=True, header_style="bold magenta")
@@ -282,6 +509,67 @@ def context_default(
 ):
     """Set the default named context (used when --context is omitted in named mode)."""
     config_manager.set_default_context(name)
+
+
+@context_app.command("promote-db")
+def context_promote_db(
+    source_context: str = typer.Option(
+        "mcp-build",
+        "--from-context",
+        help="Source named context containing the write/build DB snapshot.",
+    ),
+    target_context: str = typer.Option(
+        "mcp-read",
+        "--to-context",
+        help="Target named context used by the read-only MCP server.",
+    ),
+):
+    """
+    Promote a build DB snapshot into the read DB context.
+
+    This enables a split read/write architecture:
+    - write/index with terminal commands on --from-context
+    - serve MCP read-only from --to-context
+    """
+    _load_credentials()
+
+    src = resolve_context(cli_context=source_context, cwd=Path.cwd(), skip_local=True)
+    dst = resolve_context(cli_context=target_context, cwd=Path.cwd(), skip_local=True)
+
+    if src.database != dst.database:
+        console.print(
+            f"[red]Context database mismatch:[/red] {source_context}={src.database}, "
+            f"{target_context}={dst.database}"
+        )
+        raise typer.Exit(code=1)
+
+    # Block promotion while MCP is actively reading destination DB.
+    dst_lock_fd = None
+    try:
+        if dst.database == "kuzudb" and dst.db_path:
+            dst_lock_fd = acquire_mcp_lock(lock_path_for_db(dst.db_path), read_only=False)
+    except MCPLockError as e:
+        console.print(
+            "[bold red]Cannot promote DB while read MCP is active on target context.[/bold red]"
+        )
+        console.print(f"[dim]{e}[/dim]")
+        raise typer.Exit(code=1)
+
+    try:
+        _promote_db_snapshot(Path(src.db_path), Path(dst.db_path))
+    except Exception as e:
+        console.print(f"[red]DB promotion failed:[/red] {e}")
+        raise typer.Exit(code=1)
+    finally:
+        if dst_lock_fd is not None:
+            os.close(dst_lock_fd)
+
+    console.print(
+        f"[green]✅ Promoted DB snapshot:[/green] {source_context} -> {target_context}"
+    )
+    console.print(
+        "[dim]If MCP is running, restart it to ensure a clean connection to the promoted snapshot.[/dim]"
+    )
 
 
 # ============================================================================
@@ -580,40 +868,48 @@ def bundle_import(
     _load_credentials()
     from codegraphcontext.core.cgc_bundle import CGCBundle
     
-    services = _initialize_services(context)
-    if not all(services[:3]):
-        return
-    db_manager, graph_builder, code_finder = services[:3]
-    
+    write_lock_fd = _acquire_write_db_lock(context)
+    write_performed = False
     try:
-        bundle_path = Path(bundle_file)
+        services = _initialize_services(context)
+        if not all(services[:3]):
+            return
+        db_manager, _, _ = services[:3]
         
-        if not bundle_path.exists():
-            console.print(f"[bold red]Bundle file not found: {bundle_path}[/bold red]")
-            raise typer.Exit(code=1)
+        try:
+            bundle_path = Path(bundle_file)
+            
+            if not bundle_path.exists():
+                console.print(f"[bold red]Bundle file not found: {bundle_path}[/bold red]")
+                raise typer.Exit(code=1)
+            
+            if clear:
+                console.print("[yellow]⚠️  Warning: This will clear all existing graph data![/yellow]")
+                if not typer.confirm("Are you sure you want to continue?", default=False):
+                    console.print("[yellow]Import cancelled[/yellow]")
+                    return
+            
+            console.print(f"[cyan]Importing bundle from {bundle_path}...[/cyan]")
+            
+            bundle = CGCBundle(db_manager)
+            success, message = bundle.import_from_bundle(
+                bundle_path,
+                clear_existing=clear
+            )
+            
+            if success:
+                console.print(f"[bold green]{message}[/bold green]")
+                write_performed = True
+            else:
+                console.print(f"[bold red]Import failed: {message}[/bold red]")
+                raise typer.Exit(code=1)
         
-        if clear:
-            console.print("[yellow]⚠️  Warning: This will clear all existing graph data![/yellow]")
-            if not typer.confirm("Are you sure you want to continue?", default=False):
-                console.print("[yellow]Import cancelled[/yellow]")
-                return
-        
-        console.print(f"[cyan]Importing bundle from {bundle_path}...[/cyan]")
-        
-        bundle = CGCBundle(db_manager)
-        success, message = bundle.import_from_bundle(
-            bundle_path,
-            clear_existing=clear
-        )
-        
-        if success:
-            console.print(f"[bold green]{message}[/bold green]")
-        else:
-            console.print(f"[bold red]Import failed: {message}[/bold red]")
-            raise typer.Exit(code=1)
-    
+        finally:
+            db_manager.close_driver()
     finally:
-        db_manager.close_driver()
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
+    _maybe_auto_promote_after_write(context=context, write_performed=write_performed, action="bundle import")
 
 @bundle_app.command("load")
 def bundle_load(
@@ -984,11 +1280,18 @@ def index(
     if path is None:
         path = str(Path.cwd())
     
-    if force:
-        console.print("[yellow]Force re-indexing (--force flag detected)[/yellow]")
-        reindex_helper(path, context)
-    else:
-        index_helper(path, context)
+    write_lock_fd = _acquire_write_db_lock(context)
+    write_performed = False
+    try:
+        if force:
+            console.print("[yellow]Force re-indexing (--force flag detected)[/yellow]")
+            write_performed = reindex_helper(path, context)
+        else:
+            write_performed = index_helper(path, context)
+    finally:
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
+    _maybe_auto_promote_after_write(context=context, write_performed=write_performed, action="index")
 
 @app.command()
 def clean(
@@ -1001,7 +1304,14 @@ def clean(
     helping to keep your database tidy and performant.
     """
     _load_credentials()
-    clean_helper(context)
+    write_lock_fd = _acquire_write_db_lock(context)
+    write_performed = False
+    try:
+        write_performed = clean_helper(context)
+    finally:
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
+    _maybe_auto_promote_after_write(context=context, write_performed=write_performed, action="clean")
 
 @app.command()
 def stats(
@@ -1036,71 +1346,79 @@ def delete(
     """
     _load_credentials()
     
-    if all_repos:
-        # Delete all repositories
-        services = _initialize_services(context)
-        if not all(services[:3]):
-            return
-        db_manager, graph_builder, code_finder = services[:3]
-        
-        try:
-            # Get list of repositories
-            repos = code_finder.list_indexed_repositories()
-            
-            if not repos:
-                console.print("[yellow]No repositories to delete.[/yellow]")
-                return
-            
-            # Show what will be deleted
-            console.print(f"\n[bold red]⚠️  WARNING: You are about to delete ALL {len(repos)} repositories![/bold red]\n")
-            
-            table = Table(show_header=True, header_style="bold magenta")
-            table.add_column("Name", style="cyan")
-            table.add_column("Path", style="dim")
-            
-            for repo in repos:
-                table.add_row(repo.get("name", ""), repo.get("path", ""))
-            
-            console.print(table)
-            console.print()
-            
-            # Double confirmation
-            if not typer.confirm("Are you sure you want to delete ALL repositories?", default=False):
-                console.print("[yellow]Deletion cancelled.[/yellow]")
-                return
-            
-            console.print("[yellow]Please type 'delete all' to confirm:[/yellow] ", end="")
-            confirmation = input()
-            
-            if confirmation.strip().lower() != "delete all":
-                console.print("[yellow]Deletion cancelled. Confirmation text did not match.[/yellow]")
-                return
-            
+    write_lock_fd = _acquire_write_db_lock(context)
+    write_performed = False
+    try:
+        if all_repos:
             # Delete all repositories
-            console.print("\n[cyan]Deleting all repositories...[/cyan]")
-            deleted_count = 0
+            services = _initialize_services(context)
+            if not all(services[:3]):
+                return
+            db_manager, graph_builder, code_finder = services[:3]
             
-            for repo in repos:
-                repo_path = repo.get("path", "")
-                try:
-                    graph_builder.delete_repository_from_graph(repo_path)
-                    console.print(f"[green]✓[/green] Deleted: {repo.get('name', '')}")
-                    deleted_count += 1
-                except Exception as e:
-                    console.print(f"[red]✗[/red] Failed to delete {repo.get('name', '')}: {e}")
+            try:
+                # Get list of repositories
+                repos = code_finder.list_indexed_repositories()
+                
+                if not repos:
+                    console.print("[yellow]No repositories to delete.[/yellow]")
+                    return
+                
+                # Show what will be deleted
+                console.print(f"\n[bold red]⚠️  WARNING: You are about to delete ALL {len(repos)} repositories![/bold red]\n")
+                
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("Name", style="cyan")
+                table.add_column("Path", style="dim")
+                
+                for repo in repos:
+                    table.add_row(repo.get("name", ""), repo.get("path", ""))
+                
+                console.print(table)
+                console.print()
+                
+                # Double confirmation
+                if not typer.confirm("Are you sure you want to delete ALL repositories?", default=False):
+                    console.print("[yellow]Deletion cancelled.[/yellow]")
+                    return
+                
+                console.print("[yellow]Please type 'delete all' to confirm:[/yellow] ", end="")
+                confirmation = input()
+                
+                if confirmation.strip().lower() != "delete all":
+                    console.print("[yellow]Deletion cancelled. Confirmation text did not match.[/yellow]")
+                    return
+                
+                # Delete all repositories
+                console.print("\n[cyan]Deleting all repositories...[/cyan]")
+                deleted_count = 0
+                
+                for repo in repos:
+                    repo_path = repo.get("path", "")
+                    try:
+                        graph_builder.delete_repository_from_graph(repo_path)
+                        console.print(f"[green]✓[/green] Deleted: {repo.get('name', '')}")
+                        deleted_count += 1
+                    except Exception as e:
+                        console.print(f"[red]✗[/red] Failed to delete {repo.get('name', '')}: {e}")
+                
+                console.print(f"\n[bold green]Successfully deleted {deleted_count}/{len(repos)} repositories![/bold green]")
+                write_performed = deleted_count > 0
+                
+            finally:
+                db_manager.close_driver()
+        else:
+            # Delete specific repository
+            if not path:
+                console.print("[red]Error: Please provide a path or use --all to delete all repositories[/red]")
+                console.print("Usage: cgc delete <path> or cgc delete --all")
+                raise typer.Exit(code=1)
             
-            console.print(f"\n[bold green]Successfully deleted {deleted_count}/{len(repos)} repositories![/bold green]")
-            
-        finally:
-            db_manager.close_driver()
-    else:
-        # Delete specific repository
-        if not path:
-            console.print("[red]Error: Please provide a path or use --all to delete all repositories[/red]")
-            console.print("Usage: cgc delete <path> or cgc delete --all")
-            raise typer.Exit(code=1)
-        
-        delete_helper(path, context)
+            write_performed = delete_helper(path, context)
+    finally:
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
+    _maybe_auto_promote_after_write(context=context, write_performed=write_performed, action="delete")
 
 @app.command()
 def visualize(
@@ -1136,7 +1454,14 @@ def add_package(
     Adds a package to the code graph.
     """
     _load_credentials()
-    add_package_helper(package_name, language, context)
+    write_lock_fd = _acquire_write_db_lock(context)
+    write_performed = False
+    try:
+        write_performed = add_package_helper(package_name, language, context)
+    finally:
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
+    _maybe_auto_promote_after_write(context=context, write_performed=write_performed, action="add-package")
 
 # ============================================================================
 # WATCH COMMAND GROUP - Live File Monitoring
@@ -1167,7 +1492,12 @@ def watch(
         cgc w .                        # Using shortcut alias
     """
     _load_credentials()
-    watch_helper(path, context)
+    write_lock_fd = _acquire_write_db_lock(context)
+    try:
+        watch_helper(path, context)
+    finally:
+        if write_lock_fd is not None:
+            os.close(write_lock_fd)
 
 @app.command()
 def unwatch(
@@ -1255,6 +1585,60 @@ def watch_service_remove(
     """Remove a watcher systemd user service and its unit file."""
     _load_credentials()
     watch_service_remove_helper(unit_name, keep_unit_file=keep_unit_file)
+
+
+@app.command(name="mcp-service-install")
+def mcp_service_install(
+    context: str = typer.Option("mcp-read", "--context", "-c", help="Named read context for the MCP service."),
+    unit_name: Optional[str] = typer.Option(None, "--unit-name", help="Optional custom systemd unit name."),
+    enable: bool = typer.Option(True, "--enable/--no-enable", help="Enable unit on login."),
+    start: bool = typer.Option(True, "--start/--no-start", help="Start/restart unit after install."),
+    global_context: bool = typer.Option(
+        True,
+        "--global-context/--cwd-context",
+        help="Run MCP with shared/global context resolution (recommended).",
+    ),
+):
+    """
+    Install a persistent systemd user service for strict read-only MCP.
+    """
+    _load_credentials()
+    mcp_service_install_helper(
+        context=context,
+        unit_name=unit_name,
+        enable=enable,
+        start=start,
+        global_context=global_context,
+    )
+
+
+@app.command(name="mcp-service-status")
+def mcp_service_status(
+    unit_name: str = typer.Argument(..., help="Systemd MCP unit name (with or without .service)."),
+):
+    """Show status for an MCP systemd user service."""
+    _load_credentials()
+    mcp_service_status_helper(unit_name)
+
+
+@app.command(name="mcp-service-stop")
+def mcp_service_stop(
+    unit_name: str = typer.Argument(..., help="Systemd MCP unit name (with or without .service)."),
+    disable: bool = typer.Option(False, "--disable", help="Also disable the unit."),
+):
+    """Stop an MCP systemd user service."""
+    _load_credentials()
+    mcp_service_stop_helper(unit_name, disable=disable)
+
+
+@app.command(name="mcp-service-remove")
+def mcp_service_remove(
+    unit_name: str = typer.Argument(..., help="Systemd MCP unit name (with or without .service)."),
+    keep_unit_file: bool = typer.Option(False, "--keep-unit-file", help="Stop/disable but keep unit file on disk."),
+):
+    """Remove an MCP systemd user service and optional unit file."""
+    _load_credentials()
+    mcp_service_remove_helper(unit_name, keep_unit_file=keep_unit_file)
 
 
 
@@ -1940,7 +2324,7 @@ def analyze_dependencies(
     try:
         results = code_finder.find_module_dependencies(target)
         
-        if not results.get('importers') and not results.get('imports'):
+        if not results.get('imports') and not results.get('calls'):
             console.print(f"[yellow]No dependency information found for '{target}'[/yellow]")
             return
         
@@ -1949,20 +2333,39 @@ def analyze_dependencies(
             visualize_dependencies(results, target)
             return
         
-        # Show who imports this module
-        if results.get('importers'):
-            console.print(f"\n[bold cyan]Files that import '{target}':[/bold cyan]")
+        # Group 1: imports
+        if results.get('imports'):
+            console.print(f"\n[bold cyan]Imports for '{target}':[/bold cyan]")
             table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
             table.add_column("Location", style="cyan", overflow="fold")
+            table.add_column("Alias", style="yellow")
             
-            for imp in results['importers']:
+            for imp in results['imports']:
                 path = imp.get('importer_file_path', '')
                 line_str = str(imp.get('import_line_number', ''))
                 location_str = f"{path}:{line_str}" if line_str else path
+                alias = imp.get('import_alias') or ""
+                table.add_row(location_str, str(alias))
+            console.print(table)
 
-                table.add_row(
-                    location_str
-                )
+        # Group 2: calls
+        if results.get('calls'):
+            console.print(f"\n[bold cyan]Related Calls for '{target}':[/bold cyan]")
+            table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
+            table.add_column("Caller", style="cyan", overflow="fold")
+            table.add_column("Call", style="green")
+            table.add_column("Callee", style="magenta", overflow="fold")
+
+            for call in results['calls']:
+                caller_fn = call.get("caller_function", "")
+                caller_path = call.get("caller_file_path", "")
+                line_str = str(call.get("call_line_number", ""))
+                caller_loc = f"{caller_path}:{line_str}" if line_str else caller_path
+                caller = f"{caller_fn} @ {caller_loc}" if caller_fn else caller_loc
+                callee_fn = call.get("callee_name", "")
+                callee_path = call.get("callee_file_path", "")
+                callee = f"{callee_fn} @ {callee_path}" if callee_fn else callee_path
+                table.add_row(caller, str(call.get("full_call_name", "")), callee)
             console.print(table)
     finally:
         db_manager.close_driver()

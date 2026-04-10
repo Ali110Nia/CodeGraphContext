@@ -59,10 +59,10 @@ def _generate_mcp_json(creds):
     if "python" in Path(cgc_path).name:
         # fallback to running as module if no cgc binary is found
         command = cgc_path
-        args = ["-m", "cgc", "mcp", "start"]
+        args = ["-m", "codegraphcontext", "mcp", "start", "--readonly"]
     else:
         command = cgc_path
-        args = ["mcp","start"]
+        args = ["mcp", "start", "--readonly"]
 
     mcp_config = {
         "mcpServers": {
@@ -76,13 +76,12 @@ def _generate_mcp_json(creds):
                 },
                 "tools": {
                     "alwaysAllow": [
-                        "add_code_to_graph", "add_package_to_graph",
                         "check_job_status", "list_jobs", "find_code",
-                        "analyze_code_relationships", "watch_directory",
+                        "analyze_code_relationships",
                         "find_dead_code", "execute_cypher_query",
                         "calculate_cyclomatic_complexity", "find_most_complex_functions",
-                        "list_indexed_repositories", "delete_repository", "list_watched_paths", 
-                        "unwatch_directory", "visualize_graph_query"
+                        "list_indexed_repositories", "search_registry_bundles",
+                        "get_repository_stats", "visualize_graph_query"
                     ],
                     "disabled": False
                 },
@@ -408,10 +407,10 @@ def configure_mcp_client():
     if "python" in Path(cgc_path).name:
         # fallback to running as module if no cgc binary is found
         command = cgc_path
-        args = ["-m", "cgc", "mcp", "start"]
+        args = ["-m", "codegraphcontext", "mcp", "start", "--readonly"]
     else:
         command = cgc_path
-        args = ["mcp", "start"]
+        args = ["mcp", "start", "--readonly"]
 
     # Create MCP config with complete env section
     mcp_config = {
@@ -422,13 +421,12 @@ def configure_mcp_client():
                 "env": env_vars,
                 "tools": {
                     "alwaysAllow": [
-                        "add_code_to_graph", "add_package_to_graph",
                         "check_job_status", "list_jobs", "find_code",
-                        "analyze_code_relationships", "watch_directory",
+                        "analyze_code_relationships",
                         "find_dead_code", "execute_cypher_query",
                         "calculate_cyclomatic_complexity", "find_most_complex_functions",
-                        "list_indexed_repositories", "delete_repository", "list_watched_paths", 
-                        "unwatch_directory", "visualize_graph_query"
+                        "list_indexed_repositories", "search_registry_bundles",
+                        "get_repository_stats", "visualize_graph_query"
                     ],
                     "disabled": False
                 },

@@ -1,6 +1,7 @@
 
 # src/codegraphcontext/tools/graph_builder.py
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any, Coroutine, Dict, Optional, Tuple
 from datetime import datetime
@@ -160,7 +161,84 @@ class GraphBuilder:
             '.exs': 'elixir',
         }
         self._parsed_cache = {}
-        self.create_schema()
+        self._kuzu_table_props_cache: Dict[str, set[str]] = {}
+        self._db_read_only = bool(getattr(db_manager, "read_only", False))
+        if self._db_read_only:
+            info_logger("GraphBuilder initialized in DB read-only mode; skipping schema/FTS bootstrap.")
+        else:
+            self.create_schema()
+
+    def _backend_type(self) -> str:
+        return getattr(self.db_manager, 'get_backend_type', lambda: 'neo4j')()
+
+    def _get_kuzu_table_properties(self, label: str) -> set[str]:
+        """Return cached property names for a Kuzu table label."""
+        if label in self._kuzu_table_props_cache:
+            return self._kuzu_table_props_cache[label]
+
+        props: set[str] = set()
+        with self.driver.session() as session:
+            try:
+                rows = session.run(f"CALL table_info('{label}') RETURN *").data()
+                for row in rows:
+                    name = row.get("name")
+                    if isinstance(name, str) and name:
+                        props.add(name)
+            except Exception as e:
+                warning_logger(f"Could not read Kuzu table_info for {label}: {e}")
+
+        self._kuzu_table_props_cache[label] = props
+        return props
+
+    def _run_node_batch_upsert(
+        self,
+        session,
+        *,
+        label: str,
+        batch: list[dict],
+        file_path_str: str,
+    ) -> None:
+        """Upsert a node batch, using Kuzu-safe explicit SET assignments."""
+        if not batch:
+            return
+
+        backend_type = self._backend_type()
+        if backend_type != 'kuzudb':
+            session.run(f"""
+                UNWIND $batch AS row
+                MERGE (n:{label} {{name: row.name, path: $file_path, line_number: row.line_number}})
+                SET n += row
+            """, batch=batch, file_path=file_path_str)
+            return
+
+        table_props = self._get_kuzu_table_properties(label)
+        # Kuzu 0.11.x can segfault on some payloads when source/docstring are
+        # present in struct updates; keep structural indexing stable by omitting
+        # large text fields from batched upserts.
+        banned_for_kuzu = {"source", "docstring"}
+        if banned_for_kuzu:
+            for row in batch:
+                for banned in banned_for_kuzu:
+                    row.pop(banned, None)
+
+        # Key fields are in MERGE already; avoid re-setting them.
+        key_fields = {"name", "path", "line_number", "uid"}
+        row_keys = set(batch[0].keys())
+        settable = sorted((row_keys - key_fields) & table_props)
+        if settable:
+            set_clause = ",\n                    ".join(f"n.{k} = row.{k}" for k in settable)
+            query = f"""
+                UNWIND $batch AS row
+                MERGE (n:{label} {{name: row.name, path: $file_path, line_number: row.line_number}})
+                SET {set_clause}
+            """
+        else:
+            query = f"""
+                UNWIND $batch AS row
+                MERGE (n:{label} {{name: row.name, path: $file_path, line_number: row.line_number}})
+            """
+
+        session.run(query, batch=batch, file_path=file_path_str)
 
     def get_parser(self, extension: str) -> Optional[TreeSitterParser]:
         """Gets or creates a TreeSitterParser for the given extension."""
@@ -356,13 +434,13 @@ class GraphBuilder:
         if '.c' in files_by_lang:
             from .languages import c as c_lang_module
             imports_map.update(c_lang_module.pre_scan_c(files_by_lang['.c'], self.get_parser('.c')))
-        elif '.java' in files_by_lang:
+        if '.java' in files_by_lang:
             from .languages import java as java_lang_module
             imports_map.update(java_lang_module.pre_scan_java(files_by_lang['.java'], self.get_parser('.java')))
-        elif '.rb' in files_by_lang:
+        if '.rb' in files_by_lang:
             from .languages import ruby as ruby_lang_module
             imports_map.update(ruby_lang_module.pre_scan_ruby(files_by_lang['.rb'], self.get_parser('.rb')))
-        elif '.cs' in files_by_lang:
+        if '.cs' in files_by_lang:
             from .languages import csharp as csharp_lang_module
             imports_map.update(csharp_lang_module.pre_scan_csharp(files_by_lang['.cs'], self.get_parser('.cs')))
         if '.kt' in files_by_lang:
@@ -541,15 +619,15 @@ class GraphBuilder:
                             v = b.get(k)
                             if dominant == 'list':
                                 if isinstance(v, list):
-                                    b[k] = [str(x) for x in v] if v else [""]
+                                    b[k] = [str(x) for x in v] if v else []
                                 elif isinstance(v, str) and v:
                                     try:
                                         p = _json.loads(v)
-                                        b[k] = [str(x) for x in p] if isinstance(p, list) and p else [""]
+                                        b[k] = [str(x) for x in p] if isinstance(p, list) and p else []
                                     except Exception:
                                         b[k] = [v]
                                 else:
-                                    b[k] = [""]
+                                    b[k] = []
                             elif dominant == 'int':
                                 if v is None or v == "":
                                     b[k] = 0
@@ -576,11 +654,12 @@ class GraphBuilder:
                 # Split into node creation + relationship linking to avoid
                 # KuzuDB "Casting between NODE and NODE" errors when MERGE
                 # on a relationship follows MERGE on a node in the same query.
-                session.run(f"""
-                    UNWIND $batch AS row
-                    MERGE (n:{label} {{name: row.name, path: $file_path, line_number: row.line_number}})
-                    SET n += row
-                """, batch=batch, file_path=file_path_str)
+                self._run_node_batch_upsert(
+                    session,
+                    label=label,
+                    batch=batch,
+                    file_path_str=file_path_str,
+                )
                 session.run(f"""
                     UNWIND $batch AS row
                     MATCH (f:File {{path: $file_path}})
@@ -1104,6 +1183,37 @@ class GraphBuilder:
         Returns True if deleted, False if not found."""
         repo_path_str = str(Path(repo_path).resolve())
         path_prefix = repo_path_str + "/"
+
+        # Kuzu can crash on large batched detach-delete workloads. For per-repo
+        # local databases, a force reindex can safely reset the DB file instead.
+        if self._backend_type() == 'kuzudb':
+            kuzu_db_path_raw = getattr(self.db_manager, 'db_path', None)
+            kuzu_db_path = Path(kuzu_db_path_raw).resolve() if kuzu_db_path_raw else None
+            repo_dir = Path(repo_path_str)
+            expected_local_db = (repo_dir / '.codegraphcontext' / 'db').resolve()
+            if repo_dir.is_dir() and kuzu_db_path and str(kuzu_db_path).startswith(str(expected_local_db)):
+                try:
+                    self.db_manager.close()
+                except Exception:
+                    pass
+
+                try:
+                    if kuzu_db_path.exists():
+                        if kuzu_db_path.is_dir():
+                            shutil.rmtree(kuzu_db_path)
+                        else:
+                            kuzu_db_path.unlink()
+                except Exception as e:
+                    warning_logger(f"Failed to reset KuzuDB file {kuzu_db_path}: {e}")
+                    return False
+
+                # Recreate connection + schema for subsequent indexing operations.
+                self.driver = self.db_manager.get_driver()
+                self._kuzu_table_props_cache.clear()
+                self.create_schema()
+                info_logger(f"Reset local KuzuDB file for force re-index: {kuzu_db_path}")
+                return True
+
         with self.driver.session() as session:
             # Check if it exists
             result = session.run("MATCH (r:Repository {path: $path}) RETURN count(r) as cnt", path=repo_path_str).single()
@@ -1112,7 +1222,7 @@ class GraphBuilder:
                 return False
 
         # Step 1: Delete all CALLS/INHERITS relationships in batches (avoids ConstraintValidationFailed on later node delete)
-        for rel_type in ("CALLS", "INHERITS", "IMPORTS"):
+        for rel_type in ("CALLS", "INHERITS", "IMPORTS", "HAS_PARAMETER", "IMPLEMENTS", "INCLUDES"):
             while True:
                 with self.driver.session() as session:
                     result = session.run(
@@ -1140,13 +1250,15 @@ class GraphBuilder:
                 break
             info_logger(f"[DELETE] Removed {deleted} CONTAINS rels for {repo_path_str}")
 
-        # Step 3: Delete Function/Class/File nodes in batches by path prefix
+        # Step 3: Delete Function/Class/File nodes in batches by path prefix.
+        # At this point, relationships should already be removed, so plain DELETE
+        # is safer and avoids heavy DETACH work in Kuzu on large repos.
         for label in ("Function", "Class", "File"):
             while True:
                 with self.driver.session() as session:
                     result = session.run(
                         f"MATCH (n:{label}) WHERE n.path STARTS WITH $prefix "
-                        "WITH n LIMIT 10000 DETACH DELETE n RETURN count(n) AS deleted",
+                        "WITH n LIMIT 10000 DELETE n RETURN count(n) AS deleted",
                         prefix=path_prefix,
                     ).single()
                     deleted = result["deleted"] if result else 0
@@ -1556,13 +1668,16 @@ class GraphBuilder:
             except OSError as e:
                 warning_logger(f"Could not load/create .cgcignore: {e}")
 
-            supported_extensions = self.parsers.keys()
+            supported_extensions = set(self.parsers.keys())
             all_files = path.rglob("*") if path.is_dir() else [path]
 
-            # Previously only files with supported extensions were indexed.
-            # Updated to include all files so that unsupported file types
-            # can still be represented as minimal File nodes in the graph.
-            files = [f for f in all_files if f.is_file()]
+            # Index only supported language files by default. This keeps runs
+            # fast and avoids noisy "No parser found" warnings for docs/config.
+            index_unsupported = (get_config_value("INDEX_UNSUPPORTED_FILES") or "false").lower() == "true"
+            if index_unsupported:
+                files = [f for f in all_files if f.is_file()]
+            else:
+                files = [f for f in all_files if f.is_file() and f.suffix in supported_extensions]
 
             # Filter default ignored directories
             ignore_dirs_str = get_config_value("IGNORE_DIRS") or ""
@@ -1610,30 +1725,43 @@ class GraphBuilder:
             # skip a DB round-trip per file (was one MATCH query per file before).
             resolved_repo_path_str = str(path.resolve()) if path.is_dir() else str(path.parent.resolve())
 
+            import time as _time
             processed_count = 0
+            parse_phase_start = _time.time()
+            last_progress_log = parse_phase_start
+            progress_interval_seconds = 10.0
             for file in files:
                 if file.is_file():
                     if job_id:
                         self.job_manager.update_job(job_id, current_file=str(file))
                     repo_path = path.resolve() if path.is_dir() else file.parent.resolve()
                     file_data = self.parse_file(repo_path, file, is_dependency)
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
                     if "error" not in file_data:
                         self.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
                         all_file_data.append(file_data)
-
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
                     else:
-                        # create minimal node if parser not available
-                        self.add_minimal_file_node(file, repo_path, is_dependency)
+                        if index_unsupported:
+                            # Optional compatibility mode: keep unsupported files as minimal nodes.
+                            self.add_minimal_file_node(file, repo_path, is_dependency)
                     processed_count += 1
 
                     if job_id:
                         self.job_manager.update_job(job_id, processed_files=processed_count)
+
+                    now = _time.time()
+                    if (
+                        processed_count == len(files)
+                        or processed_count % 100 == 0
+                        or (now - last_progress_log) >= progress_interval_seconds
+                    ):
+                        total_files = len(files)
+                        pct = (processed_count / total_files * 100.0) if total_files else 100.0
+                        elapsed = now - parse_phase_start
+                        info_logger(
+                            f"[INDEX] Parsed {processed_count}/{total_files} files "
+                            f"({pct:.1f}%) in {elapsed:.1f}s"
+                        )
+                        last_progress_log = now
                     # Yield to event loop every 50 files instead of every file.
                     # Old: 28,600 files × 10ms = ~286s of dead wait for nucleus.
                     if processed_count % 50 == 0:

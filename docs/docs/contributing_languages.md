@@ -95,15 +95,13 @@ Create a small sample project for your new language (e.g., `tests/sample_project
 1.  **Delete existing data (if any):**
     ```bash
     # Replace with your sample project path
-    <tool_code>print(default_api.delete_repository(repo_path='/path/to/your/sample_project'))</tool_code>
+    cgc delete /path/to/your/sample_project
+    ```
 2.  **Index the project:**
     ```bash
     # Replace with your sample project path
-    <tool_code>print(default_api.add_code_to_graph(path='/path/to/your/sample_project'))</tool_code>
-3.  **Monitor job status:**
-    ```bash
-    # Use the job_id returned by add_code_to_graph
-    <tool_code>print(default_api.check_job_status(job_id='<your_job_id>'))</tool_code>
+    cgc index /path/to/your/sample_project --force
+    ```
 
 ### Step 3.3: Query the Neo4j Graph
 

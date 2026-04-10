@@ -74,6 +74,7 @@ A powerful **MCP server** and **CLI toolkit** that indexes local code into a gra
 * [🌐 Supported Programming Languages](#supported-programming-languages) 
 * [🛠️ CLI Toolkit](#for-cli-toolkit-mode) 
 * [🤖 MCP Server](#-for-mcp-server-mode) 
+* [🧭 Recommended MCP Deployment Path](#-recommended-mcp-deployment-path-read-only--systemd)
 * [🗄️ Database Options](#database-options)
 
 ---
@@ -353,12 +354,55 @@ cgc find pattern "Auth" --viz
     *   It stores your database credentials securely in `~/.codegraphcontext/.env`.
     *   It updates the settings file of your chosen IDE/CLI (e.g., `.claude.json` or VS Code's `settings.json`).
 
-2.  **Start:** Launch the MCP server:    
+2.  **Start:** Launch the MCP server (strict read-only is default and recommended):    
     ```bash
-    cgc mcp start
+    cgc mcp start --readonly --global-context --context mcp-read
     ```
 
 3.  **Use:** Now interact with your codebase through your AI assistant using natural language! See examples below.
+
+---
+
+### 🧭 Recommended MCP Deployment Path (Read-only + systemd)
+
+For stable day-to-day use (single MCP instance, multiple workspaces, terminal-only writes), use this path:
+
+1.  **Create contexts (one read DB, one build DB):**
+    ```bash
+    cgc context create mcp-read --database kuzudb
+    cgc context create mcp-build --database kuzudb
+    ```
+
+2.  **Install and start persistent MCP service (read-only):**
+    ```bash
+    cgc mcp-service-install --context mcp-read --unit-name cgc-mcp-read.service
+    cgc mcp-service-status cgc-mcp-read.service
+    ```
+
+3.  **Do indexing/writes in terminal only (build context):**
+    ```bash
+    cgc index /path/to/repo --force --context mcp-build
+    ```
+
+4.  **Promote build DB snapshot to read DB:**
+    ```bash
+    cgc context promote-db --from-context mcp-build --to-context mcp-read
+    ```
+
+   Optional auto-promote after successful write commands:
+    ```bash
+    export CGC_MCP_AUTO_PROMOTE=true
+    export CGC_MCP_BUILD_CONTEXT=mcp-build
+    export CGC_MCP_READ_CONTEXT=mcp-read
+    ```
+
+5.  **If needed, restart MCP service after promotion:**
+    ```bash
+    cgc mcp-service-stop cgc-mcp-read.service
+    cgc mcp-service-install --context mcp-read --unit-name cgc-mcp-read.service
+    ```
+
+Full runbook: [docs/mcp_readonly_multi_workspace.md](docs/mcp_readonly_multi_workspace.md)
 
 ---
 
@@ -395,7 +439,11 @@ Add the following server configuration to your client's settings file (e.g., VS 
       "command": "cgc",
       "args": [
         "mcp",
-        "start"
+        "start",
+        "--readonly",
+        "--global-context",
+        "--context",
+        "mcp-read"
       ],
       "env": {
         "NEO4J_URI": "YOUR_NEO4J_URI",
@@ -415,24 +463,21 @@ Add the following server configuration to your client's settings file (e.g., VS 
 
 Once the server is running, you can interact with it through your AI assistant using plain English. Here are some examples of what you can say:
 
-### Indexing and Watching Files
+### Important MCP Boundary
 
--   **To index a new project:**
-    -   "Please index the code in the `/path/to/my-project` directory."
-    OR
-    -   "Add the project at `~/dev/my-other-project` to the code graph."
+MCP is query-only by design.
 
+-   Use MCP for analysis, discovery, stats, and read-only Cypher queries.
+-   Use terminal CLI commands for all graph mutations:
+    -   indexing (`cgc index`)
+    -   watcher setup (`cgc watch`, `cgc unwatch`, `cgc watching`)
+    -   delete/import/load operations (`cgc delete`, `cgc bundle import`, `cgc bundle load`)
 
--   **To start watching a directory for live changes:**
-    -   "Watch the `/path/to/my-active-project` directory for changes."
-    OR
-    -   "Keep the code graph updated for the project I'm working on at `~/dev/main-app`."
-
-    When you ask to watch a directory, the system performs two actions at once:
-    1.  It kicks off a full scan to index all the code in that directory. This process runs in the background, and you'll receive a `job_id` to track its progress.
-    2.  It begins watching the directory for any file changes to keep the graph updated in real-time.
-
-    This means you can start by simply telling the system to watch a directory, and it will handle both the initial indexing and the continuous updates automatically.
+Example CLI write flow:
+```bash
+cgc index /path/to/my-project
+cgc watch /path/to/my-project
+```
 
 ### Querying and Understanding Code
 
@@ -467,9 +512,9 @@ Once the server is running, you can interact with it through your AI assistant u
     -   "Calculate the cyclomatic complexity of the `process_data` function in `src/utils.py`."
     -   "Find the 5 most complex functions in the codebase."
 
--   **Repository Management:**
+-   **Repository Visibility:**
     -   "List all currently indexed repositories."
-    -   "Delete the indexed repository at `/path/to/old-project`."
+    -   "Show repository stats for `/path/to/project`."
 
 ---
 

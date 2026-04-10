@@ -162,12 +162,12 @@ async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, 
             raise e
 
 
-def index_helper(path: str, context: Optional[str] = None):
+def index_helper(path: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a repository in a given context."""
     time_start = time.time()
     services = _initialize_services(context)
     if not all(services[:3]):
-        return
+        return False
 
     db_manager, graph_builder, code_finder, ctx = services
     path_obj = Path(path).resolve()
@@ -175,7 +175,7 @@ def index_helper(path: str, context: Optional[str] = None):
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
         db_manager.close_driver()
-        return
+        return False
 
     indexed_repos = code_finder.list_indexed_repositories()
     repo_exists = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
@@ -197,7 +197,7 @@ def index_helper(path: str, context: Optional[str] = None):
                     console.print(f"[yellow]Repository '{path}' is already indexed with {file_count} files. Skipping.[/yellow]")
                     console.print("[dim]💡 Tip: Use 'cgc index --force' to re-index[/dim]")
                     db_manager.close_driver()
-                    return
+                    return False
                 else:
                     console.print(f"[yellow]Repository '{path}' exists but has no files (likely interrupted). Re-indexing...[/yellow]")
         except Exception as e:
@@ -223,21 +223,23 @@ def index_helper(path: str, context: Optional[str] = None):
                 console.print("\n[cyan]🔍 ENABLE_AUTO_WATCH is enabled. Starting watcher...[/cyan]")
                 db_manager.close_driver()  # Close before starting watcher
                 watch_helper(path)  # This will block the terminal
-                return  # watch_helper handles its own cleanup
+                return True  # watch_helper handles its own cleanup
         except Exception as e:
             console.print(f"[yellow]Warning: Could not check ENABLE_AUTO_WATCH: {e}[/yellow]")
             
     except Exception as e:
         console.print(f"[bold red]An error occurred during indexing:[/bold red] {e}")
+        return False
     finally:
         db_manager.close_driver()
+    return True
 
 
-def add_package_helper(package_name: str, language: str, context: Optional[str] = None):
+def add_package_helper(package_name: str, language: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a package."""
     services = _initialize_services(context)
     if not all(services[:3]):
-        return
+        return False
 
     db_manager, graph_builder, code_finder, ctx = services
 
@@ -245,7 +247,7 @@ def add_package_helper(package_name: str, language: str, context: Optional[str] 
     if not package_path_str:
         console.print(f"[red]Error: Could not find package '{package_name}' for language '{language}'.[/red]")
         db_manager.close_driver()
-        return
+        return False
 
     package_path = Path(package_path_str)
     
@@ -253,15 +255,17 @@ def add_package_helper(package_name: str, language: str, context: Optional[str] 
     if any(repo.get("name") == package_name for repo in indexed_repos if repo.get("is_dependency")):
         console.print(f"[yellow]Package '{package_name}' is already indexed. Skipping.[/yellow]")
         db_manager.close_driver()
-        return
+        return False
 
     console.print(f"Starting indexing for package '{package_name}' at: {package_path}")
 
     try:
         asyncio.run(_run_index_with_progress(graph_builder, package_path, is_dependency=True, cgcignore_path=ctx.cgcignore_path))
         console.print(f"[green]Successfully finished indexing package: {package_name}[/green]")
+        return True
     except Exception as e:
         console.print(f"[bold red]An error occurred during package indexing:[/bold red] {e}")
+        return False
     finally:
         db_manager.close_driver()
 
@@ -296,22 +300,25 @@ def list_repos_helper(context: Optional[str] = None):
         db_manager.close_driver()
 
 
-def delete_helper(repo_path: str, context: Optional[str] = None):
+def delete_helper(repo_path: str, context: Optional[str] = None) -> bool:
     """Deletes a repository from the graph."""
     services = _initialize_services(context)
     if not all(services[:3]):
-        return
+        return False
 
     db_manager, graph_builder, _, ctx = services
     
     try:
         if graph_builder.delete_repository_from_graph(repo_path):
             console.print(f"[green]Successfully deleted repository: {repo_path}[/green]")
+            return True
         else:
             console.print(f"[yellow]Repository not found in graph: {repo_path}[/yellow]")
             console.print("[dim]Tip: Use 'cgc list' to see available repositories.[/dim]")
+            return False
     except Exception as e:
         console.print(f"[bold red]An error occurred:[/bold red] {e}")
+        return False
     finally:
         db_manager.close_driver()
 
@@ -457,12 +464,12 @@ def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context:
         db_manager.close_driver()
 
 
-def reindex_helper(path: str, context: Optional[str] = None):
+def reindex_helper(path: str, context: Optional[str] = None) -> bool:
     """Force re-index by deleting and rebuilding the repository."""
     time_start = time.time()
     services = _initialize_services(context)
     if not all(services[:3]):
-        return
+        return False
 
     db_manager, graph_builder, code_finder, ctx = services
     path_obj = Path(path).resolve()
@@ -470,7 +477,7 @@ def reindex_helper(path: str, context: Optional[str] = None):
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
         db_manager.close_driver()
-        return
+        return False
 
     # Check if already indexed
     indexed_repos = code_finder.list_indexed_repositories()
@@ -484,7 +491,7 @@ def reindex_helper(path: str, context: Optional[str] = None):
         except Exception as e:
             console.print(f"[red]Error deleting old index: {e}[/red]")
             db_manager.close_driver()
-            return
+            return False
     
     console.print(f"[cyan]Re-indexing: {path_obj}[/cyan]")
     
@@ -493,8 +500,10 @@ def reindex_helper(path: str, context: Optional[str] = None):
         time_end = time.time()
         elapsed = time_end - time_start
         console.print(f"[green]Successfully re-indexed: {path} in {elapsed:.2f} seconds[/green]")
+        return True
     except Exception as e:
         console.print(f"[bold red]An error occurred during re-indexing:[/bold red] {e}")
+        return False
     finally:
         db_manager.close_driver()
 
@@ -505,11 +514,11 @@ def update_helper(path: str, context: Optional[str] = None):
     reindex_helper(path, context)
 
 
-def clean_helper(context: Optional[str] = None):
+def clean_helper(context: Optional[str] = None) -> bool:
     """Remove orphaned nodes and relationships from the database."""
     services = _initialize_services(context)
     if not all(services[:3]):
-        return
+        return False
 
     db_manager, _, _, ctx = services
     
@@ -547,8 +556,10 @@ def clean_helper(context: Optional[str] = None):
                 console.print("[green]✓[/green] No orphaned nodes found")
             
         console.print("[green]✅ Database cleanup complete![/green]")
+        return True
     except Exception as e:
         console.print(f"[bold red]An error occurred during cleanup:[/bold red] {e}")
+        return False
     finally:
         db_manager.close_driver()
 
@@ -751,11 +762,9 @@ def unwatch_helper(path: str):
 
 def list_watching_helper():
     """List all directories currently being watched."""
-    console.print(f"[yellow]⚠️  Note: 'cgc watching' only works when the watcher is running via MCP server.[/yellow]")
+    console.print(f"[yellow]⚠️  MCP is query-only and does not expose watcher tools.[/yellow]")
     console.print(f"[dim]For CLI watch mode, check the terminal where you ran 'cgc watch'.[/dim]")
-    console.print(f"\n[cyan]To see watched directories in MCP mode:[/cyan]")
-    console.print(f"  1. Start the MCP server: cgc mcp start")
-    console.print(f"  2. Use the 'list_watched_paths' MCP tool from your IDE")
+    console.print(f"[dim]For persistent watchers, use: cgc watch-service-status <unit-name>[/dim]")
 
 
 def _slugify_unit_component(value: str) -> str:
@@ -768,6 +777,12 @@ def _systemd_watch_unit_name(path: Path, unit_name: Optional[str] = None) -> str
     if unit_name:
         return unit_name if unit_name.endswith(".service") else f"{unit_name}.service"
     return f"cgc-watch-{_slugify_unit_component(str(path))}.service"
+
+
+def _systemd_mcp_unit_name(context: str, unit_name: Optional[str] = None) -> str:
+    if unit_name:
+        return unit_name if unit_name.endswith(".service") else f"{unit_name}.service"
+    return f"cgc-mcp-{_slugify_unit_component(context)}.service"
 
 
 def _systemd_unit_file(unit_name: str) -> Path:
@@ -880,3 +895,104 @@ def watch_service_remove_helper(unit_name: str, keep_unit_file: bool = False):
         unit_file.unlink()
     _run_systemctl_user(["daemon-reload"])
     console.print(f"[green]✓[/green] Removed watcher unit: {resolved_unit_name}")
+
+
+def mcp_service_install_helper(
+    context: str = "mcp-read",
+    unit_name: Optional[str] = None,
+    enable: bool = True,
+    start: bool = True,
+    global_context: bool = True,
+):
+    """
+    Install a persistent systemd user service for strict read-only MCP mode.
+    """
+    resolved = resolve_context(cli_context=context, cwd=Path.cwd(), skip_local=True)
+    resolved_unit_name = _systemd_mcp_unit_name(context, unit_name=unit_name)
+    unit_file = _systemd_unit_file(resolved_unit_name)
+    unit_file.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "codegraphcontext",
+        "--database",
+        resolved.database,
+        "mcp",
+        "start",
+        "--readonly",
+        "--context",
+        context,
+    ]
+    cmd.append("--global-context" if global_context else "--cwd-context")
+    exec_start = shlex.join(cmd)
+
+    service_cwd = str(Path.home())
+    unit_text = (
+        "[Unit]\n"
+        f"Description=CodeGraphContext read-only MCP service ({context})\n"
+        "After=default.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={service_cwd}\n"
+        f"ExecStart={exec_start}\n"
+        "Restart=always\n"
+        "RestartSec=2\n"
+        "Environment=PYTHONUNBUFFERED=1\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    unit_file.write_text(unit_text, encoding="utf-8")
+
+    rc, _, err = _run_systemctl_user(["daemon-reload"])
+    if rc != 0:
+        console.print("[red]Failed to reload user systemd daemon.[/red]")
+        if err:
+            console.print(f"[dim]{err}[/dim]")
+        return
+
+    if enable:
+        rc, _, err = _run_systemctl_user(["enable", resolved_unit_name])
+        if rc != 0 and err:
+            console.print(f"[yellow]Warning:[/yellow] could not enable unit: {err}")
+
+    if start:
+        rc, _, err = _run_systemctl_user(["restart", resolved_unit_name])
+        if rc != 0:
+            console.print(f"[red]Failed to start {resolved_unit_name}.[/red]")
+            if err:
+                console.print(f"[dim]{err}[/dim]")
+            return
+
+    console.print(f"[green]✓[/green] Installed MCP systemd unit: [cyan]{resolved_unit_name}[/cyan]")
+    console.print(f"[green]✓[/green] Unit file: [dim]{unit_file}[/dim]")
+    console.print(f"[green]✓[/green] Exec: [dim]{exec_start}[/dim]")
+
+
+def mcp_service_status_helper(unit_name: str):
+    resolved_unit_name = _systemd_mcp_unit_name("mcp-read", unit_name=unit_name)
+    rc, out, err = _run_systemctl_user(["status", "--no-pager", resolved_unit_name])
+    if out:
+        console.print(out)
+    if rc != 0 and err:
+        console.print(f"[dim]{err}[/dim]")
+
+
+def mcp_service_stop_helper(unit_name: str, disable: bool = False):
+    resolved_unit_name = _systemd_mcp_unit_name("mcp-read", unit_name=unit_name)
+    _run_systemctl_user(["stop", resolved_unit_name])
+    if disable:
+        _run_systemctl_user(["disable", resolved_unit_name])
+    console.print(f"[green]✓[/green] Stopped {resolved_unit_name}")
+
+
+def mcp_service_remove_helper(unit_name: str, keep_unit_file: bool = False):
+    resolved_unit_name = _systemd_mcp_unit_name("mcp-read", unit_name=unit_name)
+    _run_systemctl_user(["stop", resolved_unit_name])
+    _run_systemctl_user(["disable", resolved_unit_name])
+
+    unit_file = _systemd_unit_file(resolved_unit_name)
+    if unit_file.exists() and not keep_unit_file:
+        unit_file.unlink()
+    _run_systemctl_user(["daemon-reload"])
+    console.print(f"[green]✓[/green] Removed MCP unit: {resolved_unit_name}")

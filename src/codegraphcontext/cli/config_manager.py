@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "CACHE_ENABLED": "true",
     "IGNORE_DIRS": "node_modules,venv,.venv,env,.env,dist,build,target,out,.git,.idea,.vscode,__pycache__",
     "INDEX_SOURCE": "true",
+    "INDEX_UNSUPPORTED_FILES": "false",
     # SCIP indexer feature flag (default off — existing Tree-sitter behaviour unchanged)
     "SCIP_INDEXER": "false",
     "SCIP_LANGUAGES": "python,typescript,go,rust,java",
@@ -71,6 +72,7 @@ CONFIG_DESCRIPTIONS = {
     "CACHE_ENABLED": "Enable caching for faster re-indexing",
     "IGNORE_DIRS": "Comma-separated list of directory names to ignore during indexing",
     "INDEX_SOURCE": "Store full source code in graph database (for faster indexing use false, for better performance use true)",
+    "INDEX_UNSUPPORTED_FILES": "Index unsupported file extensions as minimal File nodes (enabling this may increase noise and runtime)",
     "SCIP_INDEXER": "Use SCIP-based indexing for higher accuracy call/inheritance resolution (requires scip-<lang> tools installed)",
     "SCIP_LANGUAGES": "Comma-separated languages to index via SCIP when SCIP_INDEXER=true (python,typescript,go,rust,java)",
     "SKIP_EXTERNAL_RESOLUTION": "Skip resolution attempts for external library method calls (recommended for enterprise large Java/Spring codebases)",
@@ -89,6 +91,7 @@ CONFIG_VALIDATORS = {
     "ENABLE_AUTO_WATCH": ["true", "false"],
     "CACHE_ENABLED": ["true", "false"],
     "INDEX_SOURCE": ["true", "false"],
+    "INDEX_UNSUPPORTED_FILES": ["true", "false"],
     "SCIP_INDEXER": ["true", "false"],
     "SKIP_EXTERNAL_RESOLUTION": ["true", "false"],
 }
@@ -670,13 +673,14 @@ def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
 def resolve_context(
     cli_context: Optional[str] = None,
     cwd: Optional[Path] = None,
+    skip_local: bool = False,
 ) -> ResolvedContext:
     """
     Determine which context / DB to use.
 
     Resolution order (highest priority first):
       1. --context <name>  CLI flag
-      2. Local .codegraphcontext/ directory (per-repo)
+      2. Local .codegraphcontext/ directory (per-repo), unless skip_local=True
       3. Global config.yaml: mode + default_context
       4. Ultimate fallback: global mode, default DB
     """
@@ -702,10 +706,10 @@ def resolve_context(
         )
 
     # --- 2. Local .codegraphcontext/ in repo ---
-    local_cgc = find_local_cgc_dir(cwd)
+    local_cgc = None if skip_local else find_local_cgc_dir(cwd)
     
     # If we are in per-repo mode and no local folder was found, create it in CWD
-    if local_cgc is None and cfg.mode == "per-repo":
+    if not skip_local and local_cgc is None and cfg.mode == "per-repo":
         local_cgc = cwd / ".codegraphcontext"
         local_cgc.mkdir(parents=True, exist_ok=True)
         (local_cgc / "db").mkdir(exist_ok=True)

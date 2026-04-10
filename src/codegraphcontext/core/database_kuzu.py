@@ -31,11 +31,18 @@ class KuzuDBManager:
                     cls._instance = super(KuzuDBManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, read_only: Optional[bool] = None):
         """
         Initializes the manager with default database path or explicit overrides.
         """
-        if hasattr(self, '_initialized') and self.db_path == db_path:
+        if (
+            hasattr(self, '_initialized')
+            and self.db_path == db_path
+            and (
+                read_only is None
+                or getattr(self, "read_only", False) == bool(read_only)
+            )
+        ):
             return
             
         self._initialized = False
@@ -53,6 +60,11 @@ class KuzuDBManager:
             'KUZUDB_PATH',
             config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / 'kuzudb')
         )
+        # Allow explicit parameter override first, then env fallback.
+        if read_only is None:
+            self.read_only = os.getenv("CGC_KUZU_READ_ONLY", "false").lower() == "true"
+        else:
+            self.read_only = bool(read_only)
         
         # Ensure directory exists
         os.makedirs(Path(self.db_path).parent, exist_ok=True)
@@ -71,10 +83,13 @@ class KuzuDBManager:
                     for attempt in range(max_retries):
                         try:
                             info_logger(f"Initializing KùzuDB at {self.db_path}")
-                            self._db = kuzu.Database(self.db_path)
+                            self._db = kuzu.Database(self.db_path, read_only=self.read_only)
                             self._conn = kuzu.Connection(self._db)
-                            self._initialize_schema()
-                            info_logger("KùzuDB connection established and schema verified")
+                            if self.read_only:
+                                info_logger("KùzuDB read-only connection established (schema bootstrap skipped)")
+                            else:
+                                self._initialize_schema()
+                                info_logger("KùzuDB connection established and schema verified")
                             break
                         except ImportError:
                             error_logger("KùzuDB is not installed. Run 'pip install kuzu'")

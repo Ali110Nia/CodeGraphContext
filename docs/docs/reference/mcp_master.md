@@ -4,6 +4,10 @@ This page lists all available **MCP Tools** that your AI assistant (Cursor, Clau
 
 When you ask a question in natural language, the AI selects one of these tools behind the scenes.
 
+!!! note "Query-only MCP"
+    MCP tools are intentionally read/query-only.
+    All graph mutations (index, watch setup, delete, bundle load/import, add-package) are CLI terminal workflows.
+
 !!! tip "File Exclusion"
     You can control what gets indexed using `.cgcignore`.
     [**📄 Read the Guide**](cgcignore.md)
@@ -22,18 +26,12 @@ These are the most commonly used tools for understanding code.
 
 ## System & Management
 
-Tools for managing the graph and background jobs.
+Tools for querying indexed repository metadata and system state.
 
 | Tool Name | Description | Natural Language Example |
 | :--- | :--- | :--- |
-| **`monitor_directory`** | Start monitoring a folder (Alias: `watch_directory`)| "Watch the `src` folder." |
-| **`list_watched_paths`** | See what is being monitored. | "What directories are being watched?" |
-| **`unwatch_directory`** | Stop monitoring a folder. | "Stop watching `src`." |
 | **`list_indexed_repositories`** | Show what projects are currently indexed. | "What repos are indexed?" |
 | **`get_repository_stats`** | Show counts of files, classes, LOC. | "Show stats for the backend repo." |
-| **`delete_repository`** | Remove a repo from the graph. | "Remove the frontend repo." |
-| **`add_code_to_graph`** | Manually add a specific path. | "Add the `lib` folder." |
-| **`add_package_to_graph`** | Index an external library/package. | "Add the `requests` library." |
 
 ## Job Control
 
@@ -47,7 +45,6 @@ Tools for managing the graph and background jobs.
 | Tool Name | Description | Natural Language Example |
 | :--- | :--- | :--- |
 | **`search_registry_bundles`** | Find shared graphs in the cloud. | "Search for a `flask` bundle." |
-| **`load_bundle`** | Install a graph bundle. | "Load the `flask` bundle." |
 
 ## Advanced Querying
 
@@ -59,6 +56,18 @@ For complex questions that standard tools can't answer.
 | **`visualize_graph_query`** | Generate a Neo4j Browser link for a query. | "Visualize the class hierarchy of `BaseModel`." |
 
 ---
+
+## CLI-only Mutation Workflows
+
+Use terminal commands for write operations:
+
+- `cgc index <path>`
+- `cgc watch <path>`
+- `cgc unwatch <path>`
+- `cgc delete <path>`
+- `cgc bundle import <bundle.cgc>`
+- `cgc bundle load <bundle-name>`
+- `cgc add-package <name> <lang>`
 
 ## Example Queries (Cookbook)
 

@@ -77,7 +77,7 @@
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `cgc mcp setup` | None | Configure IDE/MCP Client. Creates `mcp.json`. *(Alias: `cgc m`)* |
-| `cgc mcp start` | None | Start the MCP Server (used by IDEs). |
+| `cgc mcp start` | `--readonly` | Start the MCP server for IDEs (query-only MCP; write workflows remain CLI-only). |
 | `cgc mcp tools` | None | List all available MCP tools. |
 | `cgc neo4j setup` | None | Configure Neo4j database connection. *(Alias: `cgc n`)* |
 | `cgc config show` | None | Display current configuration values. |
