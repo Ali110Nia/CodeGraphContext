@@ -198,7 +198,7 @@ def _maybe_auto_promote_after_write(
         return
 
     # Only auto-promote when command is operating on the configured build context.
-    if active_ctx.mode != "named" or active_ctx.context_name != build_context:
+    if getattr(active_ctx, "mode", "global") != "named" or getattr(active_ctx, "context_name", None) != build_context:
         return
 
     if build_context == read_context:

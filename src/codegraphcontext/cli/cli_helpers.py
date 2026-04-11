@@ -43,10 +43,11 @@ def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, A
     ctx = resolve_context(cli_context_flag)
     
     # Let the user know what context we're operating in
-    if ctx.mode == "named":
-        console.print(f"[cyan]Context:[/cyan] {ctx.context_name} (Database: {ctx.database})")
-    elif ctx.mode == "per-repo":
-        console.print(f"[cyan]Context:[/cyan] Per-repo local mode (Database: {ctx.database})")
+    ctx_mode = getattr(ctx, "mode", "global")
+    if ctx_mode == "named":
+        console.print(f"[cyan]Context:[/cyan] {getattr(ctx, 'context_name', '')} (Database: {getattr(ctx, 'database', '')})")
+    elif ctx_mode == "per-repo":
+        console.print(f"[cyan]Context:[/cyan] Per-repo local mode (Database: {getattr(ctx, 'database', '')})")
     else:
         # Default global mode — silent to keep CLI clean for existing users
         pass
@@ -205,7 +206,7 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
             console.print(f"[yellow]Warning: Could not check file count: {e}. Proceeding with indexing...[/yellow]")
 
     # Auto-register the repo into the named context (auto-creates if needed)
-    if context and ctx.mode == "named":
+    if context and getattr(ctx, "mode", "global") == "named":
         register_repo_in_context(context, str(path_obj), auto_create=True)
 
     console.print(f"Starting indexing for: {path_obj}")

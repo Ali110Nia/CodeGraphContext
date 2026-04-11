@@ -169,7 +169,10 @@ class GraphBuilder:
             self.create_schema()
 
     def _backend_type(self) -> str:
-        return getattr(self.db_manager, 'get_backend_type', lambda: 'neo4j')()
+        db_manager = getattr(self, "db_manager", None)
+        if db_manager is None:
+            return "neo4j"
+        return getattr(db_manager, "get_backend_type", lambda: "neo4j")()
 
     def _get_kuzu_table_properties(self, label: str) -> set[str]:
         """Return cached property names for a Kuzu table label."""
