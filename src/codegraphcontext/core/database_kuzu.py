@@ -80,6 +80,7 @@ class KuzuDBManager:
                 if self._conn is None:
                     import kuzu
                     max_retries = 5
+                    attempted_readonly_bootstrap = False
                     for attempt in range(max_retries):
                         try:
                             info_logger(f"Initializing KùzuDB at {self.db_path}")
@@ -95,6 +96,35 @@ class KuzuDBManager:
                             error_logger("KùzuDB is not installed. Run 'pip install kuzu'")
                             raise ValueError("KùzuDB missing.")
                         except Exception as e:
+                            err = str(e).lower()
+                            if (
+                                self.read_only
+                                and not attempted_readonly_bootstrap
+                                and "empty database" in err
+                                and "read only" in err
+                            ):
+                                warning_logger(
+                                    "KùzuDB read-only startup detected an empty database. "
+                                    "Bootstrapping schema once in read-write mode, then reopening read-only."
+                                )
+                                attempted_readonly_bootstrap = True
+                                try:
+                                    bootstrap_db = kuzu.Database(self.db_path, read_only=False)
+                                    bootstrap_conn = kuzu.Connection(bootstrap_db)
+                                    old_db, old_conn = self._db, self._conn
+                                    self._db, self._conn = bootstrap_db, bootstrap_conn
+                                    self._initialize_schema()
+                                    self._conn = None
+                                    self._db = None
+                                    # Retry opening in read-only mode on next loop iteration.
+                                    continue
+                                except Exception as bootstrap_error:
+                                    self._conn = None
+                                    self._db = None
+                                    error_logger(
+                                        f"Failed to bootstrap empty KùzuDB for read-only mode: {bootstrap_error}"
+                                    )
+                                    raise
                             if "lock" in str(e).lower() and attempt < max_retries - 1:
                                 wait = 0.5 * (2 ** attempt)
                                 warning_logger(f"KùzuDB lock contention, retrying in {wait:.1f}s ({attempt+1}/{max_retries})...")
