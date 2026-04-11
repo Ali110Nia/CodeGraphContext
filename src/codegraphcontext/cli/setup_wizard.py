@@ -81,7 +81,8 @@ def _generate_mcp_json(creds):
                         "find_dead_code", "execute_cypher_query",
                         "calculate_cyclomatic_complexity", "find_most_complex_functions",
                         "list_indexed_repositories", "search_registry_bundles",
-                        "get_repository_stats", "visualize_graph_query"
+                        "get_repository_stats", "visualize_graph_query",
+                        "discover_codegraph_contexts", "switch_context"
                     ],
                     "disabled": False
                 },

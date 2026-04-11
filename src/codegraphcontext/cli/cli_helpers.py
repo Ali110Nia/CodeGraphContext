@@ -28,19 +28,50 @@ from ..tools.graph_builder import GraphBuilder
 from ..tools.package_resolver import get_local_package_path
 from ..utils.debug_log import info_logger, warning_logger
 from ..utils.repo_path import any_repo_matches_path
-from .config_manager import resolve_context, ResolvedContext, register_repo_in_context, ensure_first_run_bootstrap
+from .config_manager import (
+    CONFIG_DIR,
+    resolve_context,
+    resolve_context_for_path,
+    ResolvedContext,
+    register_repo_in_context,
+    ensure_first_run_bootstrap,
+)
 
 console = Console()
 
 
-def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, Any, Any, ResolvedContext]:
+def _warn_if_local_context_uses_global_db(ctx: ResolvedContext) -> None:
+    """Warn when a repo-local context unexpectedly points at the global DB area."""
+    if not getattr(ctx, "is_local", False):
+        return
+    try:
+        db_path = Path(getattr(ctx, "db_path", "")).resolve()
+    except Exception:
+        return
+    global_db_root = (CONFIG_DIR / "global").resolve()
+    if str(db_path).startswith(str(global_db_root)):
+        console.print(
+            "[yellow]Warning:[/yellow] local context resolved to a global DB path. "
+            f"Expected repo-local DB under `.codegraphcontext/db`, got: {db_path}"
+        )
+
+
+def _initialize_services(
+    cli_context_flag: Optional[str] = None,
+    *,
+    target_path: Optional[Path | str] = None,
+) -> tuple[Any, Any, Any, ResolvedContext]:
     """
     Initializes and returns core service managers based on the resolved context.
     Returns (db_manager, graph_builder, code_finder, resolved_context).
     """
     ensure_first_run_bootstrap()
     console.print("[dim]Resolving context...[/dim]")
-    ctx = resolve_context(cli_context_flag)
+    if target_path is None:
+        ctx = resolve_context(cli_context_flag)
+    else:
+        ctx = resolve_context_for_path(target_path, cli_context=cli_context_flag)
+    _warn_if_local_context_uses_global_db(ctx)
     
     # Let the user know what context we're operating in
     ctx_mode = getattr(ctx, "mode", "global")
@@ -81,7 +112,7 @@ def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, A
             
             # Re-initialize explicitly with KùzuDB
             from ..core.database_kuzu import KuzuDBManager
-            db_manager = KuzuDBManager()
+            db_manager = KuzuDBManager(db_path=ctx.db_path)
             try:
                 db_manager.get_driver()
                 console.print("[green]✓[/green] Successfully switched to KùzuDB fallback")
@@ -167,12 +198,12 @@ async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, 
 def index_helper(path: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a repository in a given context."""
     time_start = time.time()
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
@@ -239,19 +270,17 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
 
 def add_package_helper(package_name: str, language: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a package."""
-    services = _initialize_services(context)
+    package_path_str = get_local_package_path(package_name, language)
+    if not package_path_str:
+        console.print(f"[red]Error: Could not find package '{package_name}' for language '{language}'.[/red]")
+        return False
+
+    package_path = Path(package_path_str)
+    services = _initialize_services(context, target_path=package_path)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-
-    package_path_str = get_local_package_path(package_name, language)
-    if not package_path_str:
-        console.print(f"[red]Error: Could not find package '{package_name}' for language '{language}'.[/red]")
-        db_manager.close_driver()
-        return False
-
-    package_path = Path(package_path_str)
     
     indexed_repos = code_finder.list_indexed_repositories()
     if any(repo.get("name") == package_name for repo in indexed_repos if repo.get("is_dependency")):
@@ -304,7 +333,8 @@ def list_repos_helper(context: Optional[str] = None):
 
 def delete_helper(repo_path: str, context: Optional[str] = None) -> bool:
     """Deletes a repository from the graph."""
-    services = _initialize_services(context)
+    path_obj = Path(repo_path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
@@ -487,12 +517,12 @@ def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context:
 def reindex_helper(path: str, context: Optional[str] = None) -> bool:
     """Force re-index by deleting and rebuilding the repository."""
     time_start = time.time()
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
@@ -682,12 +712,12 @@ def watch_helper(path: str, context: Optional[str] = None):
     logging.getLogger('watchdog.observers').setLevel(logging.WARNING)
     logging.getLogger('watchdog.observers.inotify_buffer').setLevel(logging.WARNING)
     
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")

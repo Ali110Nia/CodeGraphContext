@@ -1,5 +1,6 @@
 # src/codegraphcontext/server.py
 import asyncio
+from dataclasses import asdict
 import json
 import sys
 import traceback
@@ -14,7 +15,12 @@ from .core import get_database_manager
 from .core.jobs import JobManager
 from .tools.code_finder import CodeFinder
 from .utils.debug_log import info_logger, error_logger, debug_logger
-from .cli.config_manager import resolve_context
+from .cli.config_manager import (
+    discover_child_contexts,
+    remove_workspace_mapping,
+    resolve_context,
+    save_workspace_mapping,
+)
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
@@ -92,35 +98,48 @@ class MCPServer:
         """
         self.read_only_mode = bool(read_only_mode)
         self.db_read_only = bool(db_read_only)
+        self.cwd = cwd or Path.cwd()
+        self.context_override = context_override
+        self.skip_local_context = skip_local_context
         try:
             ctx = resolve_context(
                 cli_context=context_override,
-                cwd=cwd or Path.cwd(),
+                cwd=self.cwd,
                 skip_local=skip_local_context,
             )
-            self.resolved_context = ctx
-
-            # Enforce context-selected backend for this MCP process. This avoids
-            # stale runtime overrides leaking from previous CLI invocations.
-            if ctx.database:
-                os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
-
-            self.db_manager = get_database_manager(
-                db_path=ctx.db_path,
-                read_only=self.db_read_only,
-            )
-            self.db_manager.get_driver() 
+            self._connect_to_context(ctx)
         except ValueError as e:
             raise ValueError(f"Database configuration error: {e}")
 
         # Initialize managers for jobs and query tooling.
         self.job_manager = JobManager()
-        
-        # Initialize query/search handlers.
-        self.code_finder = CodeFinder(self.db_manager)
-        
+
         # Define the tool manifest that will be exposed to the AI assistant.
         self._init_tools()
+
+    def _connect_to_context(self, ctx) -> None:
+        """Connect to a resolved context and refresh query services."""
+        # Enforce context-selected backend for this MCP process. This avoids
+        # stale runtime overrides leaking from previous CLI invocations.
+        if ctx.database:
+            os.environ["CGC_RUNTIME_DB_TYPE"] = ctx.database
+
+        new_manager = get_database_manager(
+            db_path=ctx.db_path,
+            read_only=self.db_read_only,
+        )
+        new_manager.get_driver()
+
+        old_manager = getattr(self, "db_manager", None)
+        self.db_manager = new_manager
+        self.code_finder = CodeFinder(self.db_manager)
+        self.resolved_context = ctx
+
+        if old_manager is not None and old_manager is not new_manager:
+            try:
+                old_manager.close_driver()
+            except Exception:
+                pass
 
     def _init_tools(self):
         """
@@ -175,6 +194,55 @@ class MCPServer:
     def get_repository_stats_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.get_repository_stats(self.code_finder, **args)
 
+    def discover_codegraph_contexts_tool(self, **args) -> Dict[str, Any]:
+        raw_path = args.get("path")
+        max_depth = int(args.get("max_depth", 1))
+        start = Path(raw_path).expanduser().resolve() if raw_path else self.cwd
+        discovered = discover_child_contexts(start=start, max_depth=max_depth)
+        return {
+            "success": True,
+            "contexts": [asdict(item) for item in discovered],
+            "count": len(discovered),
+            "cwd": str(self.cwd),
+        }
+
+    def switch_context_tool(self, **args) -> Dict[str, Any]:
+        context_path = args.get("context_path")
+        if not isinstance(context_path, str) or not context_path.strip():
+            return {"error": "context_path is required"}
+
+        save_mapping = bool(args.get("save", True))
+        raw = Path(context_path).expanduser().resolve()
+
+        cgc_dir = raw if raw.name == ".codegraphcontext" else (raw / ".codegraphcontext")
+        if not cgc_dir.exists() or not cgc_dir.is_dir():
+            return {"error": f"No .codegraphcontext directory found at: {cgc_dir}"}
+
+        repo_root = cgc_dir.parent
+        new_ctx = resolve_context(cwd=repo_root, skip_local=False)
+        if not new_ctx.is_local:
+            return {"error": f"Failed to resolve local context at: {repo_root}"}
+
+        try:
+            self._connect_to_context(new_ctx)
+        except Exception as e:
+            return {"error": f"Failed to switch context: {e}"}
+
+        if save_mapping:
+            save_workspace_mapping(self.cwd, cgc_dir)
+        else:
+            remove_workspace_mapping(self.cwd)
+
+        return {
+            "success": True,
+            "message": "Context switched",
+            "repo_path": str(repo_root),
+            "context_path": str(cgc_dir),
+            "database": new_ctx.database,
+            "db_path": new_ctx.db_path,
+            "saved": save_mapping,
+        }
+
 
     async def handle_tool_call(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -192,7 +260,9 @@ class MCPServer:
             "list_indexed_repositories": self.list_indexed_repositories_tool,
             "visualize_graph_query": self.visualize_graph_query_tool,
             "search_registry_bundles": self.search_registry_bundles_tool,
-            "get_repository_stats": self.get_repository_stats_tool
+            "get_repository_stats": self.get_repository_stats_tool,
+            "discover_codegraph_contexts": self.discover_codegraph_contexts_tool,
+            "switch_context": self.switch_context_tool,
         }
         handler = tool_map.get(tool_name)
         if handler:

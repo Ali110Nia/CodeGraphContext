@@ -670,6 +670,31 @@ def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+def _ensure_local_context_metadata(local_cgc: Path, database: str) -> None:
+    """
+    Ensure local ``.codegraphcontext/config.yaml`` exists and records the backend.
+    """
+    local_yaml = local_cgc / "config.yaml"
+    local_raw: Dict[str, Any] = {}
+    if local_yaml.exists():
+        try:
+            with open(local_yaml) as f:
+                local_raw = yaml.safe_load(f) or {}
+        except Exception:
+            local_raw = {}
+
+    if local_raw.get("database") == database:
+        return
+
+    local_raw["database"] = database
+    try:
+        with open(local_yaml, "w") as f:
+            yaml.dump(local_raw, f, default_flow_style=False, sort_keys=False)
+    except Exception:
+        # Best effort only; context resolution should still work.
+        pass
+
+
 def resolve_context(
     cli_context: Optional[str] = None,
     cwd: Optional[Path] = None,
@@ -713,6 +738,8 @@ def resolve_context(
         local_cgc = cwd / ".codegraphcontext"
         local_cgc.mkdir(parents=True, exist_ok=True)
         (local_cgc / "db").mkdir(exist_ok=True)
+        local_db = load_config().get("DEFAULT_DATABASE", "falkordb")
+        _ensure_local_context_metadata(local_cgc, local_db)
         
         # Copy global .env into local context for easy per-repo tweaking
         import shutil
@@ -724,14 +751,15 @@ def resolve_context(
     if local_cgc is not None:
         # Read local config.yaml if present
         local_yaml = local_cgc / "config.yaml"
-        local_db = "falkordb"
+        local_db = load_config().get("DEFAULT_DATABASE", "falkordb")
         if local_yaml.exists():
             try:
                 with open(local_yaml) as f:
                     local_raw = yaml.safe_load(f) or {}
-                local_db = local_raw.get("database", "falkordb")
+                local_db = local_raw.get("database", local_db)
             except Exception:
                 pass
+        _ensure_local_context_metadata(local_cgc, local_db)
         db_path = str(local_cgc / "db" / local_db)
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
@@ -790,6 +818,22 @@ def resolve_context(
         db_path=_default_global_db_path(db),
         cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
     )
+
+
+def resolve_context_for_path(
+    target_path: Path | str,
+    cli_context: Optional[str] = None,
+    skip_local: bool = False,
+) -> ResolvedContext:
+    """
+    Resolve context using a specific target path as the working root.
+
+    This prevents commands like ``cgc index /other/repo`` from accidentally
+    resolving context from the caller's current directory.
+    """
+    target = Path(target_path).resolve()
+    lookup_root = target if target.is_dir() else target.parent
+    return resolve_context(cli_context=cli_context, cwd=lookup_root, skip_local=skip_local)
 
 
 # ---------------------------------------------------------------------------
