@@ -36,8 +36,15 @@ async def run_tree_sitter_index_async(
 
     writer.add_repository_to_graph(path, is_dependency)
     repo_name = path.name
+    supported_extensions = {ext.lower() for ext in parsers.keys()}
+    index_unsupported = (get_config_value("INDEX_UNSUPPORTED_FILES") or "false").lower() == "true"
 
-    files, _ignore_root = discover_files_to_index(path, cgcignore_path)
+    files, _ignore_root = discover_files_to_index(
+        path,
+        cgcignore_path,
+        supported_extensions=supported_extensions,
+        include_unsupported=index_unsupported,
+    )
 
     if job_id:
         job_manager.update_job(job_id, total_files=len(files))
@@ -48,9 +55,6 @@ async def run_tree_sitter_index_async(
 
     all_file_data: List[Dict[str, Any]] = []
     resolved_repo_path_str = str(path.resolve()) if path.is_dir() else str(path.parent.resolve())
-    supported_extensions = {ext.lower() for ext in parsers.keys()}
-    index_unsupported = (get_config_value("INDEX_UNSUPPORTED_FILES") or "false").lower() == "true"
-
     processed_count = 0
     for file in files:
         if not file.is_file():

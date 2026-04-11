@@ -42,7 +42,7 @@ def test_run_tree_sitter_index_skips_unsupported_when_disabled(tmp_path, monkeyp
     py_file.write_text("def f():\n    return 1\n", encoding="utf-8")
     md_file.write_text("# Notes\n", encoding="utf-8")
 
-    monkeypatch.setattr(pipeline, "discover_files_to_index", lambda *_: ([py_file, md_file], repo))
+    monkeypatch.setattr(pipeline, "discover_files_to_index", lambda *_, **__: ([py_file, md_file], repo))
     monkeypatch.setattr(pipeline, "pre_scan_for_imports", lambda *_: {})
     monkeypatch.setattr(pipeline, "build_inheritance_and_csharp_files", lambda *_: ([], []))
     monkeypatch.setattr(pipeline, "build_function_call_groups", lambda *_: ([], [], [], [], [], []))
@@ -86,7 +86,7 @@ def test_run_tree_sitter_index_adds_minimal_for_unsupported_when_enabled(tmp_pat
     monkeypatch.setattr(
         pipeline,
         "discover_files_to_index",
-        lambda *_: ([py_file, md_file, no_ext_file], repo),
+        lambda *_, **__: ([py_file, md_file, no_ext_file], repo),
     )
     monkeypatch.setattr(pipeline, "pre_scan_for_imports", lambda *_: {})
     monkeypatch.setattr(pipeline, "build_inheritance_and_csharp_files", lambda *_: ([], []))
