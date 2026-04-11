@@ -150,6 +150,16 @@ class MCPServer:
         if self.read_only_mode:
             info_logger("MCP server running in read-only query mode.")
 
+    @staticmethod
+    def _get_version() -> str:
+        """Resolve installed package version for MCP initialize handshake."""
+        try:
+            from importlib.metadata import version
+
+            return version("codegraphcontext")
+        except Exception:
+            return "0.0.0-dev"
+
     def get_database_status(self) -> dict:
         """Returns the current connection status of the Neo4j database."""
         return {"connected": self.db_manager.is_connected()}
@@ -428,7 +438,7 @@ class MCPServer:
                         "result": {
                             "protocolVersion": "2025-03-26",
                             "serverInfo": {
-                                "name": "CodeGraphContext", "version": "0.1.0",
+                                "name": "CodeGraphContext", "version": self._get_version(),
                                 "systemPrompt": LLM_SYSTEM_PROMPT
                             },
                             "capabilities": {"tools": {"listTools": True}},
