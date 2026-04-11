@@ -5,6 +5,7 @@ import urllib.parse
 import shlex
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 import time
 import os
@@ -536,7 +537,32 @@ def reindex_helper(path: str, context: Optional[str] = None) -> bool:
     if repo_exists:
         console.print(f"[yellow]Deleting existing index for: {path_obj}[/yellow]")
         try:
-            graph_builder.delete_repository_from_graph(str(path_obj))
+            backend_type = getattr(db_manager, "get_backend_type", lambda: "")()
+            if backend_type == "kuzudb" and getattr(ctx, "is_local", False) and getattr(ctx, "db_path", None):
+                # For per-repo local Kuzu contexts, force reindex can safely reset the
+                # local DB path instead of issuing large graph delete queries.
+                db_manager.close_driver()
+                db_path = Path(ctx.db_path)
+                if db_path.exists():
+                    if db_path.is_dir():
+                        shutil.rmtree(db_path, ignore_errors=True)
+                    else:
+                        db_path.unlink(missing_ok=True)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from ..core.database_kuzu import KuzuDBManager
+                    KuzuDBManager._conn = None
+                    KuzuDBManager._db = None
+                    KuzuDBManager._instance = None
+                except Exception:
+                    pass
+
+                services = _initialize_services(context, target_path=path_obj)
+                if not all(services[:3]):
+                    return False
+                db_manager, graph_builder, code_finder, ctx = services
+            else:
+                graph_builder.delete_repository_from_graph(str(path_obj))
             console.print("[green]✓[/green] Deleted old index")
         except Exception as e:
             console.print(f"[red]Error deleting old index: {e}[/red]")

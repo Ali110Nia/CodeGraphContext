@@ -704,6 +704,68 @@ class GraphWriter:
                 warning_logger(f"Attempted to delete non-existent repository: {repo_path_str}")
                 return False
 
+        if self._backend_type() == "kuzudb":
+            # Kuzu can be unstable on large relationship/node delete operations.
+            # Use small batches, clear relationships first, then delete nodes.
+            for rel_type in ("CALLS", "INHERITS", "IMPORTS", "HAS_PARAMETER", "CONTAINS", "IMPLEMENTS", "INCLUDES"):
+                while True:
+                    with self.driver.session() as session:
+                        if rel_type == "CONTAINS":
+                            result = session.run(
+                                "MATCH (a)-[r:CONTAINS]->(b) "
+                                "WHERE a.path STARTS WITH $prefix OR a.path = $path OR b.path STARTS WITH $prefix "
+                                "WITH r LIMIT 500 DELETE r RETURN count(r) AS deleted",
+                                prefix=path_prefix,
+                                path=repo_path_str,
+                            ).single()
+                        else:
+                            result = session.run(
+                                f"MATCH (a)-[r:{rel_type}]->(b) "
+                                "WHERE a.path STARTS WITH $prefix OR b.path STARTS WITH $prefix "
+                                "WITH r LIMIT 500 DELETE r RETURN count(r) AS deleted",
+                                prefix=path_prefix,
+                            ).single()
+                        deleted = result["deleted"] if result else 0
+                    if deleted == 0:
+                        break
+                    info_logger(f"[DELETE] Removed {deleted} {rel_type} rels for {repo_path_str}")
+
+            labels = (
+                "Parameter",
+                "Function",
+                "Class",
+                "Variable",
+                "Trait",
+                "Interface",
+                "Macro",
+                "Struct",
+                "Enum",
+                "Union",
+                "Annotation",
+                "Record",
+                "Property",
+                "File",
+                "Directory",
+            )
+            for label in labels:
+                while True:
+                    with self.driver.session() as session:
+                        result = session.run(
+                            f"MATCH (n:{label}) WHERE n.path STARTS WITH $prefix "
+                            "WITH n LIMIT 500 DELETE n RETURN count(n) AS deleted",
+                            prefix=path_prefix,
+                        ).single()
+                        deleted = result["deleted"] if result else 0
+                    if deleted == 0:
+                        break
+                    info_logger(f"[DELETE] Removed {deleted} {label} nodes for {repo_path_str}")
+
+            with self.driver.session() as session:
+                session.run("MATCH (r:Repository {path: $path}) DETACH DELETE r", path=repo_path_str)
+
+            info_logger(f"Deleted repository and its contents from graph: {repo_path_str}")
+            return True
+
         for rel_type in ("CALLS", "INHERITS", "IMPORTS"):
             while True:
                 with self.driver.session() as session:

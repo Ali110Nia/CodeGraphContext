@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ...cli.config_manager import get_config_value
 from ...core.jobs import JobManager, JobStatus
 from ...utils.debug_log import debug_log, error_logger, info_logger
 from .discovery import discover_files_to_index
@@ -47,6 +48,8 @@ async def run_tree_sitter_index_async(
 
     all_file_data: List[Dict[str, Any]] = []
     resolved_repo_path_str = str(path.resolve()) if path.is_dir() else str(path.parent.resolve())
+    supported_extensions = {ext.lower() for ext in parsers.keys()}
+    index_unsupported = (get_config_value("INDEX_UNSUPPORTED_FILES") or "false").lower() == "true"
 
     processed_count = 0
     for file in files:
@@ -55,6 +58,15 @@ async def run_tree_sitter_index_async(
         if job_id:
             job_manager.update_job(job_id, current_file=str(file))
         repo_path = path.resolve() if path.is_dir() else file.parent.resolve()
+        if file.suffix.lower() not in supported_extensions:
+            if index_unsupported:
+                add_minimal_file_node(file, repo_path, is_dependency)
+            processed_count += 1
+            if job_id:
+                job_manager.update_job(job_id, processed_files=processed_count)
+            if processed_count % 50 == 0:
+                await asyncio.sleep(0)
+            continue
         file_data = parse_file(repo_path, file, is_dependency)
         if "error" not in file_data:
             writer.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
