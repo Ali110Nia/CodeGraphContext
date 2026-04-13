@@ -487,7 +487,7 @@ class CodeFinder:
                     file.is_dependency AS file_is_dependency,
                     repo.name AS repository_name,
                     imports
-                ORDER BY file.is_dependency ASC, file.path
+                ORDER BY file_is_dependency ASC, path
                 LIMIT 20
             """, module_name=module_name, repo_path=repo_path)
             
