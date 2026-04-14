@@ -93,7 +93,7 @@ def get_database_manager(
                 info_logger("FalkorDB Lite is not supported or not installed. Falling back to KùzuDB.")
                 if _is_kuzudb_available():
                     from .database_kuzu import KuzuDBManager
-                    return KuzuDBManager(read_only=read_only)
+                    return KuzuDBManager(db_path=db_path, read_only=read_only)
                 raise ValueError("Database set to 'falkordb' but FalkorDB Lite is not installed or not supported on this OS.\nRun 'pip install falkordblite'")
             
             from .database_falkordb import FalkorDBManager, FalkorDBUnavailableError

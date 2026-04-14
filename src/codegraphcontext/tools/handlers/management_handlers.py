@@ -29,8 +29,9 @@ def check_job_status(job_manager: JobManager, **args) -> Dict[str, Any]:
         
         if not job:
             return {
-                "success": True, # Return success to avoid generic error wrapper
+                "success": False,
                 "status": "not_found",
+                "error_code": "JOB_NOT_FOUND",
                 "message": f"Job with ID '{job_id}' not found. The ID may be incorrect or the job may have been cleared after a server restart."
             }
         

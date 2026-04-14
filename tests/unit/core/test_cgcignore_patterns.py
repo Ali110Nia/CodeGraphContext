@@ -128,32 +128,32 @@ def test_tc04_archive_patterns_included():
 
 def test_tc05_pathspec_creation():
     """Verify PathSpec object is created successfully from default patterns"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec is not None
     assert isinstance(spec, PathSpec)
 
 def test_tc06_match_media_files():
     """Verify image files (png, jpg, jpeg) are matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("image.png") == True
     assert spec.match_file("photo.jpg") == True
     assert spec.match_file("icon.jpeg") == True
 
 def test_tc07_match_video_audio_files():
     """Verify video/audio files (mp4, mp3) are matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("video.mp4") == True
     assert spec.match_file("song.mp3") == True
 
 def test_tc08_do_not_match_source_files():
     """Verify source files (.py, .js) are NOT matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("main.py") == False
     assert spec.match_file("app.js") == False
 
 def test_tc09_do_not_match_config_files():
     """Verify config files (.json, .yaml, .md, .txt) are NOT matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("config.json") == False
     assert spec.match_file("settings.yaml") == False
     assert spec.match_file("README.md") == False
@@ -161,13 +161,13 @@ def test_tc09_do_not_match_config_files():
 
 def test_tc10_do_not_match_extensionless_files():
     """Verify extensionless files (Makefile) are NOT matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("Makefile") == False
     assert spec.match_file("empty_file") == False
 
 def test_tc11_match_files_in_subdirectories():
     """Verify media files in subdirectories are also matched for ignoring"""
-    spec = PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
+    spec = PathSpec.from_lines("gitignore", DEFAULT_IGNORE_PATTERNS)
     assert spec.match_file("assets/image.png") == True
     assert spec.match_file("src/images/photo.jpg") == True
 
@@ -491,7 +491,7 @@ def test_tc22_empty_array_plus_default_patterns():
         "Empty array + default patterns should equal default patterns only"
     
     # ✅ CONFIRM: PathSpec works with merged patterns
-    spec = PathSpec.from_lines("gitwildmatch", final_patterns)
+    spec = PathSpec.from_lines("gitignore", final_patterns)
     
     # Media files should be ignored
     assert spec.match_file("image.png") == True
