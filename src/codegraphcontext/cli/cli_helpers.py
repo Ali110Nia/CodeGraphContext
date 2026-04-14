@@ -5,6 +5,7 @@ import urllib.parse
 import shlex
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 import time
 import os
@@ -27,25 +28,58 @@ from ..tools.code_finder import CodeFinder
 from ..tools.graph_builder import GraphBuilder
 from ..tools.package_resolver import get_local_package_path
 from ..utils.debug_log import info_logger, warning_logger
-from .config_manager import resolve_context, ResolvedContext, register_repo_in_context, ensure_first_run_bootstrap
+from ..utils.repo_path import any_repo_matches_path
+from .config_manager import (
+    CONFIG_DIR,
+    resolve_context,
+    resolve_context_for_path,
+    ResolvedContext,
+    register_repo_in_context,
+    ensure_first_run_bootstrap,
+)
 
 console = Console()
 
 
-def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, Any, Any, ResolvedContext]:
+def _warn_if_local_context_uses_global_db(ctx: ResolvedContext) -> None:
+    """Warn when a repo-local context unexpectedly points at the global DB area."""
+    if not getattr(ctx, "is_local", False):
+        return
+    try:
+        db_path = Path(getattr(ctx, "db_path", "")).resolve()
+    except Exception:
+        return
+    global_db_root = (CONFIG_DIR / "global").resolve()
+    if str(db_path).startswith(str(global_db_root)):
+        console.print(
+            "[yellow]Warning:[/yellow] local context resolved to a global DB path. "
+            f"Expected repo-local DB under `.codegraphcontext/db`, got: {db_path}"
+        )
+
+
+def _initialize_services(
+    cli_context_flag: Optional[str] = None,
+    *,
+    target_path: Optional[Path | str] = None,
+) -> tuple[Any, Any, Any, ResolvedContext]:
     """
     Initializes and returns core service managers based on the resolved context.
     Returns (db_manager, graph_builder, code_finder, resolved_context).
     """
     ensure_first_run_bootstrap()
     console.print("[dim]Resolving context...[/dim]")
-    ctx = resolve_context(cli_context_flag)
+    if target_path is None:
+        ctx = resolve_context(cli_context_flag)
+    else:
+        ctx = resolve_context_for_path(target_path, cli_context=cli_context_flag)
+    _warn_if_local_context_uses_global_db(ctx)
     
     # Let the user know what context we're operating in
-    if ctx.mode == "named":
-        console.print(f"[cyan]Context:[/cyan] {ctx.context_name} (Database: {ctx.database})")
-    elif ctx.mode == "per-repo":
-        console.print(f"[cyan]Context:[/cyan] Per-repo local mode (Database: {ctx.database})")
+    ctx_mode = getattr(ctx, "mode", "global")
+    if ctx_mode == "named":
+        console.print(f"[cyan]Context:[/cyan] {getattr(ctx, 'context_name', '')} (Database: {getattr(ctx, 'database', '')})")
+    elif ctx_mode == "per-repo":
+        console.print(f"[cyan]Context:[/cyan] Per-repo local mode (Database: {getattr(ctx, 'database', '')})")
     else:
         # Default global mode — silent to keep CLI clean for existing users
         pass
@@ -79,7 +113,7 @@ def _initialize_services(cli_context_flag: Optional[str] = None) -> tuple[Any, A
             
             # Re-initialize explicitly with KùzuDB
             from ..core.database_kuzu import KuzuDBManager
-            db_manager = KuzuDBManager()
+            db_manager = KuzuDBManager(db_path=ctx.db_path)
             try:
                 db_manager.get_driver()
                 console.print("[green]✓[/green] Successfully switched to KùzuDB fallback")
@@ -165,12 +199,12 @@ async def _run_index_with_progress(graph_builder: GraphBuilder, path_obj: Path, 
 def index_helper(path: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a repository in a given context."""
     time_start = time.time()
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
@@ -178,8 +212,8 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
         return False
 
     indexed_repos = code_finder.list_indexed_repositories()
-    repo_exists = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
-    
+    repo_exists = any_repo_matches_path(indexed_repos, path_obj)
+
     if repo_exists:
         # Check if the repository actually has files (not just an empty node from interrupted indexing)
         # Use variable-length path to handle both flat (Repository->File) and
@@ -187,7 +221,7 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
         try:
             with db_manager.get_driver().session() as session:
                 result = session.run(
-                    "MATCH (r:Repository {path: $path})-[:CONTAINS*]->(f:File) RETURN count(f) as file_count",
+                    "MATCH (r:Repository {path: $path})-[:CONTAINS*]->(f:File) RETURN count(DISTINCT f) as file_count",
                     path=str(path_obj)
                 )
                 record = result.single()
@@ -204,7 +238,7 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
             console.print(f"[yellow]Warning: Could not check file count: {e}. Proceeding with indexing...[/yellow]")
 
     # Auto-register the repo into the named context (auto-creates if needed)
-    if context and ctx.mode == "named":
+    if context and getattr(ctx, "mode", "global") == "named":
         register_repo_in_context(context, str(path_obj), auto_create=True)
 
     console.print(f"Starting indexing for: {path_obj}")
@@ -237,19 +271,17 @@ def index_helper(path: str, context: Optional[str] = None) -> bool:
 
 def add_package_helper(package_name: str, language: str, context: Optional[str] = None) -> bool:
     """Synchronously indexes a package."""
-    services = _initialize_services(context)
+    package_path_str = get_local_package_path(package_name, language)
+    if not package_path_str:
+        console.print(f"[red]Error: Could not find package '{package_name}' for language '{language}'.[/red]")
+        return False
+
+    package_path = Path(package_path_str)
+    services = _initialize_services(context, target_path=package_path)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-
-    package_path_str = get_local_package_path(package_name, language)
-    if not package_path_str:
-        console.print(f"[red]Error: Could not find package '{package_name}' for language '{language}'.[/red]")
-        db_manager.close_driver()
-        return False
-
-    package_path = Path(package_path_str)
     
     indexed_repos = code_finder.list_indexed_repositories()
     if any(repo.get("name") == package_name for repo in indexed_repos if repo.get("is_dependency")):
@@ -291,7 +323,7 @@ def list_repos_helper(context: Optional[str] = None):
 
         for repo in repos:
             repo_type = "Dependency" if repo.get("is_dependency") else "Project"
-            table.add_row(repo["name"], repo["path"], repo_type)
+            table.add_row(repo.get("name") or "", str(repo.get("path") or ""), repo_type)
         
         console.print(table)
     except Exception as e:
@@ -302,7 +334,8 @@ def list_repos_helper(context: Optional[str] = None):
 
 def delete_helper(repo_path: str, context: Optional[str] = None) -> bool:
     """Deletes a repository from the graph."""
-    services = _initialize_services(context)
+    path_obj = Path(repo_path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
@@ -387,7 +420,7 @@ import urllib.parse
 from ..viz.server import run_server, set_db_manager
 
 def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context: Optional[str] = None):
-    """"Generates an interactive visualization using the Playground UI."""
+    """Generates an interactive visualization using the Playground UI."""
     services = _initialize_services(context)
     if not all(services[:3]):
         return
@@ -425,15 +458,33 @@ def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context:
             if cwd_static_dir.exists():
                 static_dir = cwd_static_dir
             else:
-                console.print(f"[yellow]Warning: Visualization assets not found.[/yellow]")
-                console.print(f"[dim]Checked paths:[/dim]")
-                console.print(f"  [dim]- {static_dir}[/dim]")
+                console.print("[bold red]Visualization assets not found.[/bold red]")
+                console.print("[dim]Checked paths:[/dim]")
+                console.print(f"  [dim]- {package_root / 'viz' / 'dist'}[/dim]")
                 console.print(f"  [dim]- {dev_static_dir}[/dim]")
                 console.print(f"  [dim]- {alt_dev_dir}[/dim]")
                 console.print(f"  [dim]- {cwd_static_dir}[/dim]")
-                console.print("[dim]Please run 'cd website && npm run build' first.[/dim]")
-                # We continue anyway to let the server start (helpful for dev)
-    
+                console.print(
+                    "[dim]If you installed from PyPI, upgrade after the next release "
+                    "(wheels must bundle viz/dist). If you are developing from source, run:[/dim]"
+                )
+                console.print("  [cyan]./scripts/sync_viz_dist.sh[/cyan]")
+                console.print(
+                    "[dim]or[/dim] [cyan]cd website && npm ci && npm run build[/cyan] "
+                    "[dim]then sync[/dim] [cyan]website/dist[/cyan] [dim]→[/dim] "
+                    "[cyan]src/codegraphcontext/viz/dist[/cyan][dim].[/dim]"
+                )
+                db_manager.close_driver()
+                raise SystemExit(1)
+
+    index_html = static_dir / "index.html"
+    if not index_html.is_file():
+        console.print(
+            f"[bold red]Invalid visualization bundle:[/bold red] missing {index_html}"
+        )
+        db_manager.close_driver()
+        raise SystemExit(1)
+
     # Construct the URL
     backend_url = f"http://localhost:{port}"
     params = {"backend": backend_url}
@@ -467,12 +518,12 @@ def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context:
 def reindex_helper(path: str, context: Optional[str] = None) -> bool:
     """Force re-index by deleting and rebuilding the repository."""
     time_start = time.time()
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return False
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
@@ -481,12 +532,37 @@ def reindex_helper(path: str, context: Optional[str] = None) -> bool:
 
     # Check if already indexed
     indexed_repos = code_finder.list_indexed_repositories()
-    repo_exists = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
-    
+    repo_exists = any_repo_matches_path(indexed_repos, path_obj)
+
     if repo_exists:
         console.print(f"[yellow]Deleting existing index for: {path_obj}[/yellow]")
         try:
-            graph_builder.delete_repository_from_graph(str(path_obj))
+            backend_type = getattr(db_manager, "get_backend_type", lambda: "")()
+            if backend_type == "kuzudb" and getattr(ctx, "is_local", False) and getattr(ctx, "db_path", None):
+                # For per-repo local Kuzu contexts, force reindex can safely reset the
+                # local DB path instead of issuing large graph delete queries.
+                db_manager.close_driver()
+                db_path = Path(ctx.db_path)
+                if db_path.exists():
+                    if db_path.is_dir():
+                        shutil.rmtree(db_path, ignore_errors=True)
+                    else:
+                        db_path.unlink(missing_ok=True)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from ..core.database_kuzu import KuzuDBManager
+                    KuzuDBManager._conn = None
+                    KuzuDBManager._db = None
+                    KuzuDBManager._instance = None
+                except Exception:
+                    pass
+
+                services = _initialize_services(context, target_path=path_obj)
+                if not all(services[:3]):
+                    return False
+                db_manager, graph_builder, code_finder, ctx = services
+            else:
+                graph_builder.delete_repository_from_graph(str(path_obj))
             console.print("[green]✓[/green] Deleted old index")
         except Exception as e:
             console.print(f"[red]Error deleting old index: {e}[/red]")
@@ -662,12 +738,12 @@ def watch_helper(path: str, context: Optional[str] = None):
     logging.getLogger('watchdog.observers').setLevel(logging.WARNING)
     logging.getLogger('watchdog.observers.inotify_buffer').setLevel(logging.WARNING)
     
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, target_path=path_obj)
     if not all(services[:3]):
         return
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
 
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
@@ -685,7 +761,7 @@ def watch_helper(path: str, context: Optional[str] = None):
     # transient empty result from list_indexed_repositories never triggers a
     # destructive full rescan of an already-populated graph.
     indexed_repos = code_finder.list_indexed_repositories()
-    is_indexed = any(Path(repo["path"]).resolve() == path_obj for repo in indexed_repos)
+    is_indexed = any_repo_matches_path(indexed_repos, path_obj)
     if not is_indexed:
         # Fallback: count File nodes whose path starts with this repo's path.
         # If > 100 exist, the repo is clearly already indexed — skip the scan.

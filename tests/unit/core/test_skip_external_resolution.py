@@ -59,13 +59,16 @@ class TestSkipExternalResolutionConfig:
 
     def test_set_and_get_config_value(self):
         """Test setting and getting the configuration value."""
-        # Set to true
-        set_config_value("SKIP_EXTERNAL_RESOLUTION", "true")
-        assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "true"
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "codegraphcontext.cli.config_manager.find_local_env", return_value=None
+        ):
+            # Set to true
+            set_config_value("SKIP_EXTERNAL_RESOLUTION", "true")
+            assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "true"
 
-        # Set to false
-        set_config_value("SKIP_EXTERNAL_RESOLUTION", "false")
-        assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "false"
+            # Set to false
+            set_config_value("SKIP_EXTERNAL_RESOLUTION", "false")
+            assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "false"
 
     def test_environment_variable_override(self):
         """Test that environment variable SKIP_EXTERNAL_RESOLUTION works."""
@@ -98,14 +101,12 @@ class TestSkipExternalResolutionBehavior:
         assert GraphBuilder is not None
 
     def test_skip_external_logic_exists_in_code(self):
-        """Test that the skip_external logic is present in graph_builder.py"""
+        """Test that the skip_external logic is present in resolution layer."""
         import inspect
-        from codegraphcontext.tools.graph_builder import GraphBuilder
-        
-        # Get source code of _create_all_function_calls method (batched version)
-        source = inspect.getsource(GraphBuilder._create_all_function_calls)
-        
-        # Verify key logic is present
+        from codegraphcontext.tools.indexing.resolution import calls as calls_mod
+
+        source = inspect.getsource(calls_mod.build_function_call_groups)
+
         assert "skip_external" in source
         assert "SKIP_EXTERNAL_RESOLUTION" in source
 
@@ -128,11 +129,14 @@ class TestBackwardCompatibility:
     def test_existing_configs_not_affected(self):
         """Test that other configuration options still work."""
         # Setting SKIP_EXTERNAL_RESOLUTION should not affect other configs
-        set_config_value("SKIP_EXTERNAL_RESOLUTION", "true")
-        set_config_value("INDEX_VARIABLES", "false")
-        
-        assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "true"
-        assert get_config_value("INDEX_VARIABLES").lower() == "false"
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "codegraphcontext.cli.config_manager.find_local_env", return_value=None
+        ):
+            set_config_value("SKIP_EXTERNAL_RESOLUTION", "true")
+            set_config_value("INDEX_VARIABLES", "false")
+            
+            assert get_config_value("SKIP_EXTERNAL_RESOLUTION").lower() == "true"
+            assert get_config_value("INDEX_VARIABLES").lower() == "false"
 
 
 # Integration test (would require actual Neo4j - marked as e2e)

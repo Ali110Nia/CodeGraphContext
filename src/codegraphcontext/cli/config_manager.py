@@ -670,6 +670,31 @@ def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+def _ensure_local_context_metadata(local_cgc: Path, database: str) -> None:
+    """
+    Ensure local ``.codegraphcontext/config.yaml`` exists and records the backend.
+    """
+    local_yaml = local_cgc / "config.yaml"
+    local_raw: Dict[str, Any] = {}
+    if local_yaml.exists():
+        try:
+            with open(local_yaml) as f:
+                local_raw = yaml.safe_load(f) or {}
+        except Exception:
+            local_raw = {}
+
+    if local_raw.get("database") == database:
+        return
+
+    local_raw["database"] = database
+    try:
+        with open(local_yaml, "w") as f:
+            yaml.dump(local_raw, f, default_flow_style=False, sort_keys=False)
+    except Exception:
+        # Best effort only; context resolution should still work.
+        pass
+
+
 def resolve_context(
     cli_context: Optional[str] = None,
     cwd: Optional[Path] = None,
@@ -713,6 +738,8 @@ def resolve_context(
         local_cgc = cwd / ".codegraphcontext"
         local_cgc.mkdir(parents=True, exist_ok=True)
         (local_cgc / "db").mkdir(exist_ok=True)
+        local_db = load_config().get("DEFAULT_DATABASE", "falkordb")
+        _ensure_local_context_metadata(local_cgc, local_db)
         
         # Copy global .env into local context for easy per-repo tweaking
         import shutil
@@ -724,14 +751,15 @@ def resolve_context(
     if local_cgc is not None:
         # Read local config.yaml if present
         local_yaml = local_cgc / "config.yaml"
-        local_db = "falkordb"
+        local_db = load_config().get("DEFAULT_DATABASE", "falkordb")
         if local_yaml.exists():
             try:
                 with open(local_yaml) as f:
                     local_raw = yaml.safe_load(f) or {}
-                local_db = local_raw.get("database", "falkordb")
+                local_db = local_raw.get("database", local_db)
             except Exception:
                 pass
+        _ensure_local_context_metadata(local_cgc, local_db)
         db_path = str(local_cgc / "db" / local_db)
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
@@ -742,6 +770,21 @@ def resolve_context(
             cgcignore_path=cgcignore,
             is_local=True,
         )
+
+    # --- 2b. Saved workspace mapping (CWD -> child .codegraphcontext/) ---
+    mapping = get_workspace_mapping(cwd)
+    if mapping:
+        mapped_ctx_path = Path(mapping["context_path"])
+        if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
+            mapped_db = mapping.get("database", "falkordb")
+            return ResolvedContext(
+                mode="per-repo",
+                context_name="",
+                database=mapped_db,
+                db_path=str(mapped_ctx_path / "db" / mapped_db),
+                cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
+                is_local=True,
+            )
 
     # --- 3. Global config.yaml ---
     if cfg.mode == "named":
@@ -775,6 +818,22 @@ def resolve_context(
         db_path=_default_global_db_path(db),
         cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
     )
+
+
+def resolve_context_for_path(
+    target_path: Path | str,
+    cli_context: Optional[str] = None,
+    skip_local: bool = False,
+) -> ResolvedContext:
+    """
+    Resolve context using a specific target path as the working root.
+
+    This prevents commands like ``cgc index /other/repo`` from accidentally
+    resolving context from the caller's current directory.
+    """
+    target = Path(target_path).resolve()
+    lookup_root = target if target.is_dir() else target.parent
+    return resolve_context(cli_context=cli_context, cwd=lookup_root, skip_local=skip_local)
 
 
 # ---------------------------------------------------------------------------
@@ -880,3 +939,149 @@ def list_contexts() -> List[ContextInfo]:
     """Return all named contexts."""
     cfg = load_context_config()
     return list(cfg.contexts.values())
+
+
+# =============================================================================
+# CHILD CONTEXT DISCOVERY
+# =============================================================================
+
+@dataclass
+class DiscoveredContext:
+    """A .codegraphcontext folder found in a child directory."""
+    path: str            # absolute path to the parent repo directory
+    cgc_path: str        # absolute path to the .codegraphcontext directory
+    repo_name: str       # name of the parent directory
+    database: str        # backend from local config.yaml, or default
+    db_path: str         # resolved db path
+    cgcignore_path: str  # path to .cgcignore if present
+
+
+def discover_child_contexts(
+    start: Optional[Path] = None,
+    max_depth: int = 1,
+) -> List[DiscoveredContext]:
+    """Walk child directories of *start* up to *max_depth* levels looking for
+    ``.codegraphcontext/`` folders that represent per-repo databases.
+
+    Returns a list of :class:`DiscoveredContext` for each match found.
+    The global ``~/.codegraphcontext`` is always excluded.
+    """
+    start = (start or Path.cwd()).resolve()
+    global_dir = CONFIG_DIR.resolve()
+    results: List[DiscoveredContext] = []
+
+    def _scan(directory: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            candidate = entry / ".codegraphcontext"
+            if candidate.exists() and candidate.is_dir() and candidate.resolve() != global_dir:
+                local_db = "falkordb"
+                local_yaml = candidate / "config.yaml"
+                if local_yaml.exists():
+                    try:
+                        with open(local_yaml) as f:
+                            raw = yaml.safe_load(f) or {}
+                        local_db = raw.get("database", "falkordb")
+                    except Exception:
+                        pass
+                results.append(DiscoveredContext(
+                    path=str(entry),
+                    cgc_path=str(candidate),
+                    repo_name=entry.name,
+                    database=local_db,
+                    db_path=str(candidate / "db" / local_db),
+                    cgcignore_path=str(candidate / ".cgcignore"),
+                ))
+            if depth < max_depth:
+                _scan(entry, depth + 1)
+
+    _scan(start, 1)
+    return results
+
+
+# =============================================================================
+# WORKSPACE MAPPINGS  (global persistence of CWD -> context path)
+# =============================================================================
+
+def _load_workspace_mappings() -> Dict[str, Dict[str, str]]:
+    """Load the ``workspace_mappings`` section from config.yaml."""
+    if not CONTEXT_CONFIG_FILE.exists():
+        return {}
+    try:
+        with open(CONTEXT_CONFIG_FILE, "r") as f:
+            raw = yaml.safe_load(f) or {}
+        return raw.get("workspace_mappings", {}) or {}
+    except Exception:
+        return {}
+
+
+def _save_workspace_mappings(mappings: Dict[str, Dict[str, str]]) -> None:
+    """Write *mappings* back into the ``workspace_mappings`` key of config.yaml,
+    preserving all other keys."""
+    ensure_config_dir()
+    raw: Dict[str, Any] = {}
+    if CONTEXT_CONFIG_FILE.exists():
+        try:
+            with open(CONTEXT_CONFIG_FILE, "r") as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception:
+            raw = {}
+    raw["workspace_mappings"] = mappings
+    try:
+        with open(CONTEXT_CONFIG_FILE, "w") as f:
+            yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        console.print(f"[red]Error saving workspace mappings: {e}[/red]")
+
+
+def get_workspace_mapping(cwd: Path) -> Optional[Dict[str, str]]:
+    """Look up a saved workspace mapping for *cwd*.
+
+    Returns a dict with ``context_path`` and ``database`` keys, or None.
+    """
+    mappings = _load_workspace_mappings()
+    return mappings.get(str(cwd.resolve()))
+
+
+def save_workspace_mapping(cwd: Path, context_path: Path) -> None:
+    """Persist an association from *cwd* to a ``.codegraphcontext`` directory."""
+    context_path = context_path.resolve()
+    local_db = "falkordb"
+    local_yaml = context_path / "config.yaml"
+    if local_yaml.exists():
+        try:
+            with open(local_yaml) as f:
+                raw = yaml.safe_load(f) or {}
+            local_db = raw.get("database", "falkordb")
+        except Exception:
+            pass
+
+    mappings = _load_workspace_mappings()
+    mappings[str(cwd.resolve())] = {
+        "context_path": str(context_path),
+        "database": local_db,
+    }
+    _save_workspace_mappings(mappings)
+
+
+def remove_workspace_mapping(cwd: Path) -> bool:
+    """Delete a saved workspace mapping. Returns True if one was removed."""
+    mappings = _load_workspace_mappings()
+    key = str(cwd.resolve())
+    if key in mappings:
+        del mappings[key]
+        _save_workspace_mappings(mappings)
+        return True
+    return False
+
+
+def list_workspace_mappings() -> Dict[str, Dict[str, str]]:
+    """Return all saved workspace mappings."""
+    return _load_workspace_mappings()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -84,3 +85,67 @@ def test_repo_path_normalization_supports_workspace_shorthand_prefix(patched_ser
     ]
     normalized = srv._normalize_repo_path_argument({"repo_path": "Subproject-HMM"})
     assert normalized["repo_path"] == "/workspace/Subproject-HMM"
+
+
+def test_discover_codegraph_contexts_tool(monkeypatch, patched_server_deps):
+    @dataclass
+    class _Ctx:
+        path: str
+        cgc_path: str
+        repo_name: str
+        database: str
+        db_path: str
+        cgcignore_path: str
+
+    monkeypatch.setattr(
+        server_mod,
+        "discover_child_contexts",
+        lambda **_kwargs: [
+            _Ctx(
+                path="/workspace/repo",
+                cgc_path="/workspace/repo/.codegraphcontext",
+                repo_name="repo",
+                database="kuzudb",
+                db_path="/workspace/repo/.codegraphcontext/db/kuzudb",
+                cgcignore_path="/workspace/repo/.codegraphcontext/.cgcignore",
+            )
+        ],
+    )
+
+    srv = server_mod.MCPServer(read_only_mode=True, db_read_only=True)
+    result = srv.discover_codegraph_contexts_tool(path="/workspace", max_depth=2)
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["contexts"][0]["database"] == "kuzudb"
+
+
+def test_switch_context_tool_saves_mapping(monkeypatch, tmp_path, patched_server_deps):
+    repo = tmp_path / "repo"
+    cgc_dir = repo / ".codegraphcontext"
+    cgc_dir.mkdir(parents=True)
+
+    saved = {"called": False}
+
+    monkeypatch.setattr(
+        server_mod,
+        "resolve_context",
+        lambda **_kwargs: SimpleNamespace(
+            is_local=True,
+            database="kuzudb",
+            db_path=str(cgc_dir / "db" / "kuzudb"),
+        ),
+    )
+    monkeypatch.setattr(
+        server_mod,
+        "save_workspace_mapping",
+        lambda *_args, **_kwargs: saved.__setitem__("called", True),
+    )
+    monkeypatch.setattr(server_mod, "remove_workspace_mapping", lambda *_args, **_kwargs: None)
+
+    srv = server_mod.MCPServer(read_only_mode=True, db_read_only=True)
+    monkeypatch.setattr(srv, "_connect_to_context", lambda _ctx: None)
+
+    result = srv.switch_context_tool(context_path=str(repo), save=True)
+    assert result["success"] is True
+    assert result["database"] == "kuzudb"
+    assert saved["called"] is True
