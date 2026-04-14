@@ -613,6 +613,11 @@ def test_mcp_start_defaults_to_readonly(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "acquire_mcp_lock", _fake_lock)
     monkeypatch.setattr(cli_main, "MCPServer", _FakeMCPServer)
+    monkeypatch.setattr(
+        cli_main,
+        "run_startup_health_gate",
+        lambda **_kwargs: {"ok": True, "canary_results": []},
+    )
 
     closed_fds = []
     monkeypatch.setattr(cli_main.os, "close", lambda fd: closed_fds.append(fd))
@@ -624,6 +629,33 @@ def test_mcp_start_defaults_to_readonly(monkeypatch, tmp_path):
     assert captured["server_read_only_mode"] is True
     assert captured["server_db_read_only"] is True
     assert 99 in closed_fds
+
+
+def test_mcp_start_fails_on_startup_health_gate(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "resolve_context",
+        lambda **_kwargs: types.SimpleNamespace(database="kuzudb", db_path=str(tmp_path / "db" / "kuzudb")),
+    )
+    monkeypatch.setattr(cli_main, "acquire_mcp_lock", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(
+        cli_main,
+        "run_startup_health_gate",
+        lambda **_kwargs: {
+            "ok": False,
+            "error_code": "MCP_STARTUP_HEALTH_GATE_FAILED",
+            "action_hint": "MCP_DISABLED_USE_NON_MCP_FALLBACK",
+            "canary_results": [{"name": "list_indexed_repositories", "ok": False}],
+        },
+    )
+    monkeypatch.setattr(cli_main, "startup_strict_mode_enabled", lambda: True)
+
+    result = runner.invoke(app, ["mcp", "start"])
+
+    assert result.exit_code == 1
+    assert "MCP startup health gate failed" in result.output
+    assert "MCP_STARTUP_HEALTH_GATE_FAILED" in result.output
 
 
 def test_index_fails_fast_on_write_lock_contention(monkeypatch, tmp_path):

@@ -6,6 +6,7 @@ import sys
 import traceback
 import os
 import re
+import time
 from pathlib import Path
 
 from typing import Any, Dict, Coroutine, Optional, List, Tuple
@@ -13,6 +14,11 @@ from typing import Any, Dict, Coroutine, Optional, List, Tuple
 from .prompts import LLM_SYSTEM_PROMPT
 from .core import get_database_manager
 from .core.jobs import JobManager
+from .core.mcp_watchdog import (
+    infer_context_path_from_db_path,
+    make_error_payload,
+    watchdog_log,
+)
 from .tools.code_finder import CodeFinder
 from .utils.debug_log import info_logger, error_logger, debug_logger
 from .cli.config_manager import (
@@ -34,6 +40,8 @@ DEFAULT_EDIT_DISTANCE = 2
 DEFAULT_FUZZY_SEARCH = False
 
 WORKSPACE_PREFIX = "/workspace/"
+
+RETRYABLE_DIAGNOSTIC_CODES = {"REPO_SCOPE_EMPTY", "GRAPH_EMPTY", "MCP_CONTEXT_MISMATCH"}
 
 
 def _is_path_key(key: str) -> bool:
@@ -140,6 +148,179 @@ class MCPServer:
                 old_manager.close_driver()
             except Exception:
                 pass
+
+    def _tool_timeout_seconds(self, tool_name: str) -> float:
+        base = os.getenv("CGC_MCP_TOOL_TIMEOUT_SECONDS", "45")
+        specific = os.getenv(
+            f"CGC_MCP_TOOL_TIMEOUT_{tool_name.upper()}_SECONDS",
+            os.getenv("CGC_MCP_TOOL_TIMEOUT_EXECUTE_CYPHER_SECONDS", "60") if tool_name == "execute_cypher_query" else base,
+        )
+        try:
+            value = float(specific)
+            return max(1.0, value)
+        except Exception:
+            return 45.0
+
+    def _error_context_fields(self) -> Dict[str, Any]:
+        db_path = getattr(self.resolved_context, "db_path", None)
+        return {
+            "db_path": db_path,
+            "context_path": infer_context_path_from_db_path(db_path or ""),
+        }
+
+    def _extract_error_code(self, result: Dict[str, Any]) -> str | None:
+        code = result.get("error_code")
+        if isinstance(code, str) and code:
+            return code
+        diagnostic = result.get("diagnostic")
+        if isinstance(diagnostic, dict):
+            dcode = diagnostic.get("code")
+            if isinstance(dcode, str) and dcode:
+                return dcode
+        nested = result.get("results")
+        if isinstance(nested, dict):
+            ndiag = nested.get("diagnostic")
+            if isinstance(ndiag, dict):
+                ncode = ndiag.get("code")
+                if isinstance(ncode, str) and ncode:
+                    return ncode
+        return None
+
+    def _attempt_context_rebind(self, reason: str) -> bool:
+        try:
+            expected = resolve_context(
+                cli_context=self.context_override,
+                cwd=self.cwd,
+                skip_local=self.skip_local_context,
+            )
+        except Exception as exc:
+            watchdog_log(
+                "context_rebind_failed",
+                {"reason": reason, "error": str(exc), **self._error_context_fields()},
+            )
+            return False
+
+        current_db_path = getattr(self.resolved_context, "db_path", None)
+        current_db = getattr(self.resolved_context, "database", None)
+        expected_db_path = getattr(expected, "db_path", None)
+        expected_db = getattr(expected, "database", None)
+        changed = (current_db_path != expected_db_path) or (current_db != expected_db)
+        if not changed and self.db_manager.is_connected():
+            return False
+
+        try:
+            self._connect_to_context(expected)
+            watchdog_log(
+                "context_rebind",
+                {
+                    "reason": reason,
+                    "from_db_path": current_db_path,
+                    "to_db_path": expected_db_path,
+                    "from_database": current_db,
+                    "to_database": expected_db,
+                },
+            )
+            return True
+        except Exception as exc:
+            watchdog_log(
+                "context_rebind_failed",
+                {
+                    "reason": reason,
+                    "error": str(exc),
+                    "expected_db_path": expected_db_path,
+                    "expected_database": expected_db,
+                },
+            )
+            return False
+
+    def _augment_error_result(self, result: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+        out = dict(result)
+        fields = self._error_context_fields()
+        out.setdefault("error_code", self._extract_error_code(result) or "MCP_TOOL_FAILED")
+        out.setdefault("retryable", out.get("error_code") in RETRYABLE_DIAGNOSTIC_CODES)
+        out.setdefault("tool_name", tool_name)
+        out.setdefault("db_path", fields["db_path"])
+        out.setdefault("context_path", fields["context_path"])
+        return out
+
+    async def _execute_tool_with_watchdog(
+        self,
+        *,
+        tool_name: str,
+        handler,
+        args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        timeout_seconds = self._tool_timeout_seconds(tool_name)
+        args = self._normalize_repo_path_argument(args)
+        attempt = 0
+
+        while attempt < 2:
+            attempt += 1
+            started = time.perf_counter()
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(handler, **args),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                err = make_error_payload(
+                    error_code="MCP_TOOL_TIMEOUT",
+                    message=(
+                        f"Tool '{tool_name}' timed out after {timeout_seconds:.0f}s. "
+                        "Avoid MCP for this operation and use non-MCP fallback."
+                    ),
+                    retryable=False,
+                    tool_name=tool_name,
+                    extra={"timeout_seconds": timeout_seconds, "attempt": attempt},
+                    **self._error_context_fields(),
+                )
+                watchdog_log("tool_timeout", err)
+                return err
+            except Exception as exc:
+                if attempt == 1 and self._attempt_context_rebind("tool_exception"):
+                    continue
+                err = make_error_payload(
+                    error_code="MCP_TOOL_EXCEPTION",
+                    message=f"Tool '{tool_name}' raised an exception: {exc}",
+                    retryable=attempt == 1,
+                    tool_name=tool_name,
+                    extra={"attempt": attempt},
+                    **self._error_context_fields(),
+                )
+                watchdog_log("tool_exception", err)
+                return err
+
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            watchdog_log(
+                "tool_call",
+                {
+                    "tool_name": tool_name,
+                    "attempt": attempt,
+                    "duration_ms": duration_ms,
+                    "success": isinstance(result, dict) and "error" not in result,
+                    **self._error_context_fields(),
+                },
+            )
+
+            if not isinstance(result, dict):
+                return result
+
+            if "error" not in result:
+                return result
+
+            code = self._extract_error_code(result)
+            if attempt == 1 and code in RETRYABLE_DIAGNOSTIC_CODES and self._attempt_context_rebind(code or "retryable_error"):
+                continue
+
+            return self._augment_error_result(result, tool_name)
+
+        return make_error_payload(
+            error_code="MCP_TOOL_FAILED_AFTER_RETRY",
+            message=f"Tool '{tool_name}' failed after watchdog retry.",
+            retryable=False,
+            tool_name=tool_name,
+            **self._error_context_fields(),
+        )
 
     def _init_tools(self):
         """
@@ -276,10 +457,13 @@ class MCPServer:
         }
         handler = tool_map.get(tool_name)
         if handler:
-            args = self._normalize_repo_path_argument(args)
-            # Run the synchronous tool function in a separate thread to avoid
-            # blocking the main asyncio event loop.
-            return await asyncio.to_thread(handler, **args)
+            if self._attempt_context_rebind("pre_tool_call"):
+                watchdog_log("pre_tool_call_rebind", {"tool_name": tool_name, **self._error_context_fields()})
+            return await self._execute_tool_with_watchdog(
+                tool_name=tool_name,
+                handler=handler,
+                args=args,
+            )
         else:
             return {"error": f"Unknown tool: {tool_name}"}
 

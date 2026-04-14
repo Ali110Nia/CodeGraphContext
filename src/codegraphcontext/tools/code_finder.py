@@ -685,12 +685,20 @@ class CodeFinder:
             repo_filter = "AND file.path STARTS WITH $repo_path" if repo_path else ""
             result = session.run(f"""
                 MATCH (file:File)-[imp:IMPORTS]->(module:Module)
-                WHERE (module.name = $module_name OR module.full_import_name CONTAINS $module_name) {repo_filter}
+                WHERE (
+                    module.name = $module_name OR
+                    module.full_import_name = $module_name OR
+                    module.full_import_name STARTS WITH CONCAT($module_name, '.') OR
+                    imp.imported_name = $module_name OR
+                    imp.full_import_name = $module_name OR
+                    imp.full_import_name STARTS WITH CONCAT($module_name, '.')
+                ) {repo_filter}
                 OPTIONAL MATCH (repo:Repository)-[:CONTAINS]->(file)
                 WITH file, repo, COLLECT({{
                     imported_module: module.name,
-                    import_alias: module.alias,
-                    full_import_name: module.full_import_name
+                    imported_symbol: imp.imported_name,
+                    import_alias: imp.alias,
+                    full_import_name: imp.full_import_name
                 }}) AS imports
                 RETURN
                     file.name AS file_name,
@@ -877,14 +885,21 @@ class CodeFinder:
                 "note": "These functions might be unused, but could be entry points, callbacks, or called dynamically"
             }
     
-    def find_all_callers(self, function_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> List[Dict]:
+    def find_all_callers(
+        self,
+        function_name: str,
+        path: Optional[str] = None,
+        repo_path: Optional[str] = None,
+        max_depth: int = 6,
+    ) -> List[Dict]:
         """Find all direct and indirect callers of a specific function."""
+        depth = max(1, min(int(max_depth), 12))
         with self.driver.session() as session:
             repo_filter = "AND f.path STARTS WITH $repo_path" if repo_path else ""
             if path:
                 # KùzuDB-compatible: Use anonymous end node and filter with WHERE
                 query = f"""
-                    MATCH p = (f:Function)-[:CALLS*]->()
+                    MATCH p = (f:Function)-[:CALLS*1..{depth}]->()
                     WITH f as f, p as p, nodes(p) as path_nodes
                     WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes)] as target
                     WHERE target.name = $function_name AND target.path = $path {repo_filter}
@@ -896,7 +911,7 @@ class CodeFinder:
             else:
                 # KùzuDB-compatible: Use anonymous end node and filter with WHERE
                 query = f"""
-                    MATCH p = (f:Function)-[:CALLS*]->()
+                    MATCH p = (f:Function)-[:CALLS*1..{depth}]->()
                     WITH f as f, p as p, nodes(p) as path_nodes
                     WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes)] as target
                     WHERE target.name = $function_name {repo_filter}
@@ -907,15 +922,22 @@ class CodeFinder:
                 result = session.run(query, function_name=function_name, repo_path=repo_path)
             return result.data()
 
-    def find_all_callees(self, function_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> List[Dict]:
+    def find_all_callees(
+        self,
+        function_name: str,
+        path: Optional[str] = None,
+        repo_path: Optional[str] = None,
+        max_depth: int = 6,
+    ) -> List[Dict]:
         """Find all direct and indirect callees of a specific function."""
+        depth = max(1, min(int(max_depth), 12))
         with self.driver.session() as session:
             repo_filter = "WHERE f.path STARTS WITH $repo_path" if repo_path else ""
             if path:
                 # KùzuDB-compatible: Use anonymous end node and extract from path
                 query = f"""
                     MATCH (caller:Function {{name: $function_name, path: $path}})
-                    MATCH p = (caller)-[:CALLS*]->()
+                    MATCH p = (caller)-[:CALLS*1..{depth}]->()
                     WITH p as p, nodes(p) as path_nodes
                     WITH path_nodes[size(path_nodes)] as f
                     {repo_filter}
@@ -928,7 +950,7 @@ class CodeFinder:
                 # KùzuDB-compatible: Use anonymous end node and extract from path
                 query = f"""
                     MATCH (caller:Function {{name: $function_name}})
-                    MATCH p = (caller)-[:CALLS*]->()
+                    MATCH p = (caller)-[:CALLS*1..{depth}]->()
                     WITH p as p, nodes(p) as path_nodes
                     WITH path_nodes[size(path_nodes)] as f
                     {repo_filter}
@@ -1084,6 +1106,57 @@ class CodeFinder:
         call_limit = 30
         target = (module_name or "").strip()
         is_path_target = "/" in target or target.endswith(".py")
+
+        # Guard against misleading "all-zero" results when the selected scope
+        # has no indexed files at all.
+        scope_file_count = 0
+        with self.driver.session() as preflight_session:
+            preflight_params: Dict[str, Any] = {}
+            preflight_repo_filter = ""
+            if repo_path:
+                if Path(repo_path).is_absolute():
+                    preflight_repo_filter = "WHERE f.path STARTS WITH $repo_path"
+                    preflight_params["repo_path"] = repo_path
+                else:
+                    preflight_repo_filter = "WHERE f.path CONTAINS $repo_path_segment"
+                    preflight_params["repo_path_segment"] = f"/{repo_path.strip('/')}/"
+            preflight_result = preflight_session.run(
+                f"""
+                    MATCH (f:File)
+                    {preflight_repo_filter}
+                    RETURN count(f) as file_count
+                """,
+                **preflight_params,
+            ).data()
+            if preflight_result:
+                scope_file_count = int(preflight_result[0].get("file_count", 0) or 0)
+
+        if scope_file_count == 0:
+            if repo_path:
+                diagnostic_message = (
+                    "No indexed files found for the requested repo scope "
+                    f"'{repo_path}'. Re-index the repository and retry."
+                )
+                diagnostic_code = "REPO_SCOPE_EMPTY"
+            else:
+                diagnostic_message = (
+                    "No indexed files found in the active graph database. "
+                    "Index a repository and retry."
+                )
+                diagnostic_code = "GRAPH_EMPTY"
+            return {
+                "module_name": target,
+                "import_count": 0,
+                "call_count": 0,
+                "imports": [],
+                "calls": [],
+                "diagnostic": {
+                    "code": diagnostic_code,
+                    "message": diagnostic_message,
+                    "repo_path": repo_path,
+                },
+            }
+
         with self.driver.session() as session:
             query_params: Dict[str, Any] = {"module_name": target}
             repo_filter = ""
@@ -1152,13 +1225,23 @@ class CodeFinder:
             else:
                 # Group 1: files importing this module by module symbol/name.
                 imports_result = session.run(f"""
-                    MATCH (file:File)-[imp:IMPORTS]->(module:Module {{name: $module_name}})
+                    MATCH (file:File)-[imp:IMPORTS]->(module:Module)
                     WHERE 1=1 {repo_filter}
+                      AND (
+                        module.name = $module_name OR
+                        module.full_import_name = $module_name OR
+                        module.full_import_name STARTS WITH CONCAT($module_name, '.') OR
+                        imp.imported_name = $module_name OR
+                        imp.full_import_name = $module_name OR
+                        imp.full_import_name STARTS WITH CONCAT($module_name, '.')
+                      )
                     RETURN DISTINCT
                         file.path as importer_file_path,
                         imp.line_number as import_line_number,
                         imp.alias as import_alias,
                         module.name as imported_module,
+                        imp.imported_name as imported_symbol,
+                        imp.full_import_name as imported_full_name,
                         file.is_dependency as file_is_dependency
                     ORDER BY file_is_dependency ASC, importer_file_path, import_line_number
                     LIMIT {import_limit}
@@ -1167,11 +1250,19 @@ class CodeFinder:
                 # Group 2: call usage from importer files.
                 # Heuristic by design: derive base symbol from import alias/name and match full_call_name prefix.
                 calls_result = session.run(f"""
-                    MATCH (file:File)-[imp:IMPORTS]->(module:Module {{name: $module_name}})
+                    MATCH (file:File)-[imp:IMPORTS]->(module:Module)
                     WHERE 1=1 {repo_filter}
+                      AND (
+                        module.name = $module_name OR
+                        module.full_import_name = $module_name OR
+                        module.full_import_name STARTS WITH CONCAT($module_name, '.') OR
+                        imp.imported_name = $module_name OR
+                        imp.full_import_name = $module_name OR
+                        imp.full_import_name STARTS WITH CONCAT($module_name, '.')
+                      )
                     WITH DISTINCT file, imp, module,
-                        coalesce(imp.alias, module.name) as primary_base,
-                        module.name as module_base
+                        coalesce(imp.alias, imp.imported_name, module.name) as primary_base,
+                        coalesce(imp.imported_name, module.name) as module_base
                     MATCH (caller:Function {{path: file.path}})-[call:CALLS]->(callee)
                     WHERE (
                         call.full_call_name = primary_base OR
@@ -1342,14 +1433,18 @@ class CodeFinder:
                 }
             
             elif query_type == "find_all_callers":
-                results = self.find_all_callers(target, context, repo_path=repo_path)
+                path_filter = None if (context and context.isdigit()) else context
+                depth = int(context) if (context and context.isdigit()) else 6
+                results = self.find_all_callers(target, path_filter, repo_path=repo_path, max_depth=depth)
                 return {
                     "query_type": "find_all_callers", "target": target, "context": context, "results": results,
                     "summary": f"Found {len(results)} direct and indirect callers of '{target}'"
                 }
 
             elif query_type == "find_all_callees":
-                results = self.find_all_callees(target, context, repo_path=repo_path)
+                path_filter = None if (context and context.isdigit()) else context
+                depth = int(context) if (context and context.isdigit()) else 6
+                results = self.find_all_callees(target, path_filter, repo_path=repo_path, max_depth=depth)
                 return {
                     "query_type": "find_all_callees", "target": target, "context": context, "results": results,
                     "summary": f"Found {len(results)} direct and indirect callees of '{target}'"
@@ -1373,6 +1468,16 @@ class CodeFinder:
             
             elif query_type in ["module_deps", "module_dependencies", "module_usage"]:
                 results = self.find_module_dependencies(target, repo_path=repo_path)
+                diagnostic = results.get("diagnostic") if isinstance(results, dict) else None
+                if isinstance(diagnostic, dict) and diagnostic.get("code") in {"REPO_SCOPE_EMPTY", "GRAPH_EMPTY"}:
+                    message = str(diagnostic.get("message", "No indexed files found for module dependency analysis."))
+                    return {
+                        "query_type": "module_dependencies",
+                        "target": target,
+                        "results": results,
+                        "error": message,
+                        "summary": message,
+                    }
                 return {
                     "query_type": "module_dependencies", "target": target, "results": results,
                     "summary": (

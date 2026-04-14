@@ -19,6 +19,7 @@ import logging
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv, set_key
 from importlib.metadata import version as pkg_version, PackageNotFoundError
@@ -26,9 +27,10 @@ from importlib.metadata import version as pkg_version, PackageNotFoundError
 from codegraphcontext.server import MCPServer
 from codegraphcontext.core.database import DatabaseManager
 from codegraphcontext.core.mcp_lock import acquire_mcp_lock, lock_path_for_db, MCPLockError
+from codegraphcontext.core.mcp_watchdog import run_startup_health_gate, startup_strict_mode_enabled
 from .setup_wizard import run_neo4j_setup_wizard, configure_mcp_client
 from . import config_manager
-from .config_manager import resolve_context
+from .config_manager import resolve_context, resolve_context_for_path
 # Import the new helper functions
 from .cli_helpers import (
     index_helper,
@@ -98,12 +100,19 @@ console = Console(stderr=True)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
 
-def _acquire_write_db_lock(context: Optional[str] = None) -> Optional[int]:
+def _acquire_write_db_lock(
+    context: Optional[str] = None,
+    *,
+    target_path: Optional[str | Path] = None,
+) -> Optional[int]:
     """
     Acquire an exclusive DB lock for write operations when running on KùzuDB.
     This prevents silent lock contention with active MCP reader/writer processes.
     """
-    resolved = resolve_context(cli_context=context, cwd=Path.cwd())
+    if target_path is None:
+        resolved = resolve_context(cli_context=context, cwd=Path.cwd())
+    else:
+        resolved = resolve_context_for_path(target_path, cli_context=context)
     if resolved.database != "kuzudb" or not resolved.db_path:
         return None
 
@@ -236,6 +245,35 @@ def _maybe_auto_promote_after_write(
             os.close(dst_lock_fd)
 
 
+def _run_systemctl_user(args: list[str]) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", *args],
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except FileNotFoundError:
+        return 127, "", "systemctl not found on this machine"
+
+
+def _systemd_user_bus_available() -> tuple[bool, str]:
+    rc, _, err = _run_systemctl_user(["show-environment"])
+    if rc == 0:
+        return True, ""
+    return False, err or "systemd --user bus is not available"
+
+
+def _service_unit_name(service_type: str, context_or_path: str, unit_name: Optional[str]) -> str:
+    if unit_name:
+        return unit_name if unit_name.endswith(".service") else f"{unit_name}.service"
+    if service_type == "mcp":
+        safe = "".join(ch if ch.isalnum() else "-" for ch in context_or_path.strip()).strip("-").lower() or "mcp-read"
+        return f"cgc-mcp-{safe}.service"
+    safe = "".join(ch if ch.isalnum() else "-" for ch in context_or_path.strip()).strip("-").lower() or "workspace"
+    return f"cgc-watch-{safe}.service"
+
+
 def get_version() -> str:
     """
     Try to read version from the installed package metadata.
@@ -328,6 +366,21 @@ def mcp_start(
         if resolved.database == "kuzudb" and resolved.db_path:
             mcp_lock_path = lock_path_for_db(resolved.db_path)
             mcp_lock_fd = acquire_mcp_lock(mcp_lock_path, read_only=readonly)
+
+        health = run_startup_health_gate(
+            resolved_context=resolved,
+            cwd=Path.cwd(),
+            context_override=context,
+            skip_local_context=global_context,
+            mcp_lock_fd=mcp_lock_fd,
+            db_read_only=readonly and resolved.database == "kuzudb",
+        )
+        if not health.get("ok"):
+            if startup_strict_mode_enabled():
+                console.print("[bold red]MCP startup health gate failed.[/bold red]")
+                console.print(json.dumps(health, indent=2))
+                raise typer.Exit(code=1)
+            console.print("[yellow]MCP startup health gate reported warnings; continuing due to non-strict mode.[/yellow]")
 
         server = MCPServer(
             loop=loop,
@@ -1081,7 +1134,43 @@ def registry_request(
 # ============================================================================
 
 @app.command()
-def doctor():
+def doctor(
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help="Attempt to auto-install/repair MCP and watcher systemd user services.",
+    ),
+    mcp_context: str = typer.Option(
+        "mcp-read",
+        "--mcp-context",
+        help="Named context for MCP service checks/repair.",
+    ),
+    mcp_unit_name: Optional[str] = typer.Option(
+        None,
+        "--mcp-unit",
+        help="Optional MCP systemd unit name override.",
+    ),
+    watch_path: Optional[str] = typer.Option(
+        None,
+        "--watch-path",
+        help="Watcher path to check/install when --fix is used (optional).",
+    ),
+    watch_context: Optional[str] = typer.Option(
+        None,
+        "--watch-context",
+        help="Optional named context for watcher service install.",
+    ),
+    watch_database: str = typer.Option(
+        "kuzudb",
+        "--watch-database",
+        help="Watcher service database backend when --fix installs watcher.",
+    ),
+    watch_unit_name: Optional[str] = typer.Option(
+        None,
+        "--watch-unit",
+        help="Optional watcher systemd unit name override.",
+    ),
+):
     """
     Run diagnostics to check system health and configuration.
     
@@ -1240,6 +1329,94 @@ def doctor():
     else:
         console.print(f"   [yellow]⚠[/yellow] cgc command not in PATH (using python -m cgc)")
     
+    # 6. Check systemd user services (MCP + watcher)
+    console.print("\n[bold]6. Checking systemd User Services...[/bold]")
+    user_bus_ok, user_bus_err = _systemd_user_bus_available()
+    mcp_unit = _service_unit_name("mcp", mcp_context, mcp_unit_name)
+    mcp_unit_file = Path.home() / ".config" / "systemd" / "user" / mcp_unit
+    mcp_enabled = False
+    mcp_active = False
+
+    if not user_bus_ok:
+        console.print("   [yellow]⚠[/yellow] systemd user bus is unavailable in this session")
+        if user_bus_err:
+            console.print(f"   [dim]{user_bus_err}[/dim]")
+        console.print("   [dim]Service checks/install require an active user session (systemd --user).[/dim]")
+        all_checks_passed = False
+    else:
+        if mcp_unit_file.exists():
+            console.print(f"   [green]✓[/green] MCP unit file exists: {mcp_unit_file}")
+        else:
+            console.print(f"   [red]✗[/red] MCP unit file missing: {mcp_unit_file}")
+            all_checks_passed = False
+
+        rc_enabled, out_enabled, _ = _run_systemctl_user(["is-enabled", mcp_unit])
+        mcp_enabled = rc_enabled == 0 and out_enabled == "enabled"
+        if mcp_enabled:
+            console.print(f"   [green]✓[/green] MCP unit enabled: {mcp_unit}")
+        else:
+            console.print(f"   [yellow]⚠[/yellow] MCP unit not enabled: {mcp_unit}")
+
+        rc_active, out_active, _ = _run_systemctl_user(["is-active", mcp_unit])
+        mcp_active = rc_active == 0 and out_active == "active"
+        if mcp_active:
+            console.print(f"   [green]✓[/green] MCP unit active: {mcp_unit}")
+        else:
+            console.print(f"   [yellow]⚠[/yellow] MCP unit not active: {mcp_unit}")
+
+        if fix and (not mcp_unit_file.exists() or not mcp_enabled or not mcp_active):
+            console.print(f"   [cyan]Repairing MCP service:[/cyan] {mcp_unit}")
+            mcp_service_install_helper(
+                context=mcp_context,
+                unit_name=mcp_unit_name,
+                enable=True,
+                start=True,
+                global_context=True,
+            )
+            rc_active_after, out_active_after, _ = _run_systemctl_user(["is-active", mcp_unit])
+            if rc_active_after == 0 and out_active_after == "active":
+                console.print(f"   [green]✓[/green] MCP service repaired and active: {mcp_unit}")
+            else:
+                console.print(f"   [red]✗[/red] MCP service still not active after repair: {mcp_unit}")
+                all_checks_passed = False
+
+        # Watcher checks are optional unless path is provided.
+        if watch_path:
+            watch_path_resolved = str(Path(watch_path).resolve())
+            watch_unit = _service_unit_name("watch", watch_path_resolved, watch_unit_name)
+            watch_unit_file = Path.home() / ".config" / "systemd" / "user" / watch_unit
+
+            if watch_unit_file.exists():
+                console.print(f"   [green]✓[/green] Watcher unit file exists: {watch_unit_file}")
+            else:
+                console.print(f"   [yellow]⚠[/yellow] Watcher unit file missing: {watch_unit_file}")
+
+            rc_w_active, out_w_active, _ = _run_systemctl_user(["is-active", watch_unit])
+            watch_active = rc_w_active == 0 and out_w_active == "active"
+            if watch_active:
+                console.print(f"   [green]✓[/green] Watcher unit active: {watch_unit}")
+            else:
+                console.print(f"   [yellow]⚠[/yellow] Watcher unit not active: {watch_unit}")
+
+            if fix and (not watch_unit_file.exists() or not watch_active):
+                console.print(f"   [cyan]Repairing watcher service:[/cyan] {watch_unit}")
+                watch_service_install_helper(
+                    path=watch_path_resolved,
+                    context=watch_context,
+                    database=watch_database,
+                    unit_name=watch_unit_name,
+                    enable=True,
+                    start=True,
+                )
+                rc_w_active_after, out_w_active_after, _ = _run_systemctl_user(["is-active", watch_unit])
+                if rc_w_active_after == 0 and out_w_active_after == "active":
+                    console.print(f"   [green]✓[/green] Watcher service repaired and active: {watch_unit}")
+                else:
+                    console.print(f"   [red]✗[/red] Watcher service still not active after repair: {watch_unit}")
+                    all_checks_passed = False
+        else:
+            console.print("   [dim]Watcher check skipped (no --watch-path provided).[/dim]")
+
     # Final summary
     console.print("\n" + "=" * 60)
     if all_checks_passed:
@@ -1280,7 +1457,7 @@ def index(
     if path is None:
         path = str(Path.cwd())
     
-    write_lock_fd = _acquire_write_db_lock(context)
+    write_lock_fd = _acquire_write_db_lock(context, target_path=path)
     write_performed = False
     try:
         if force:
@@ -1346,7 +1523,10 @@ def delete(
     """
     _load_credentials()
     
-    write_lock_fd = _acquire_write_db_lock(context)
+    write_lock_fd = _acquire_write_db_lock(
+        context,
+        target_path=None if all_repos else path,
+    )
     write_performed = False
     try:
         if all_repos:
@@ -1492,7 +1672,7 @@ def watch(
         cgc w .                        # Using shortcut alias
     """
     _load_credentials()
-    write_lock_fd = _acquire_write_db_lock(context)
+    write_lock_fd = _acquire_write_db_lock(context, target_path=path)
     try:
         watch_helper(path, context)
     finally:

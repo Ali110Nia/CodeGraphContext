@@ -101,6 +101,102 @@ class GraphWriter:
                 is_dependency=is_dependency,
             )
 
+    @staticmethod
+    def _python_importer_module_context(file_path_str: str, repo_path_str: str) -> Tuple[str, bool]:
+        """Return (importer_module_path, is_package_init_file) for a Python file."""
+        file_path = Path(file_path_str)
+        repo_path = Path(repo_path_str)
+        try:
+            rel = file_path.relative_to(repo_path)
+        except ValueError:
+            rel = Path(file_path.name)
+        rel_no_suffix = rel.with_suffix("")
+        parts = list(rel_no_suffix.parts)
+        is_init = bool(parts and parts[-1] == "__init__")
+        if is_init:
+            parts = parts[:-1]
+        return ".".join(parts), is_init
+
+    @staticmethod
+    def _resolve_python_module_ref(
+        module_ref: str,
+        importer_module: str,
+        importer_is_init: bool,
+    ) -> str:
+        """Resolve relative Python import refs (e.g. '.x', '..core.y') to canonical module path."""
+        raw = (module_ref or "").strip()
+        if not raw:
+            return raw
+        dot_count = len(raw) - len(raw.lstrip("."))
+        if dot_count == 0:
+            return raw
+
+        tail = raw.lstrip(".")
+        importer_parts = [p for p in importer_module.split(".") if p]
+        package_parts = importer_parts if importer_is_init else importer_parts[:-1]
+        levels_up = max(0, dot_count - 1)
+        if levels_up > len(package_parts):
+            return tail
+        base = package_parts[: len(package_parts) - levels_up]
+        if tail:
+            base.extend([p for p in tail.split(".") if p])
+        return ".".join(base)
+
+    def _normalize_import_rows(
+        self,
+        imports: List[Dict[str, Any]],
+        *,
+        lang: Optional[str],
+        file_path_str: str,
+        repo_path_str: str,
+    ) -> List[Dict[str, Any]]:
+        """Normalize import payloads to canonical module-path + symbol semantics."""
+        normalized: List[Dict[str, Any]] = []
+        importer_module = ""
+        importer_is_init = False
+        if lang == "python":
+            importer_module, importer_is_init = self._python_importer_module_context(
+                file_path_str=file_path_str,
+                repo_path_str=repo_path_str,
+            )
+
+        for imp in imports:
+            row = dict(imp)
+            name = str(row.get("name", "")).strip()
+            alias = row.get("alias")
+            full_import_name = str(row.get("full_import_name", "")).strip() or name
+
+            imported_symbol = name
+            module_ref = full_import_name
+            if name and full_import_name and full_import_name != name and full_import_name.endswith(f".{name}"):
+                module_ref = full_import_name[: -(len(name) + 1)]
+
+            if lang == "python":
+                canonical_module = self._resolve_python_module_ref(
+                    module_ref=module_ref,
+                    importer_module=importer_module,
+                    importer_is_init=importer_is_init,
+                )
+            else:
+                canonical_module = module_ref
+
+            canonical_module = canonical_module.strip()
+            if not canonical_module:
+                canonical_module = name
+
+            canonical_full_import_name = canonical_module
+            if imported_symbol and canonical_module and imported_symbol != canonical_module:
+                if full_import_name.endswith(f".{name}") or "." not in name:
+                    canonical_full_import_name = f"{canonical_module}.{imported_symbol}"
+
+            row["module_name"] = canonical_module
+            row["imported_name"] = imported_symbol
+            row["full_import_name"] = canonical_full_import_name
+            row["alias"] = alias
+            normalized.append(row)
+
+        return normalized
+
     def add_file_to_graph(
         self,
         file_data: Dict[str, Any],
@@ -376,18 +472,26 @@ class GraphWriter:
                 )
 
             if other_imports:
+                normalized_other_imports = self._normalize_import_rows(
+                    other_imports,
+                    lang=lang,
+                    file_path_str=file_path_str,
+                    repo_path_str=resolved_repo_str,
+                )
                 session.run(
                     """
                     UNWIND $batch AS row
                     MATCH (f:File {path: $file_path})
-                    MERGE (m:Module {name: row.name})
+                    MERGE (m:Module {name: row.module_name})
                     SET m.alias = row.alias,
                         m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
                     MERGE (f)-[r:IMPORTS]->(m)
                     SET r.line_number = row.line_number,
-                        r.alias = row.alias
+                        r.alias = row.alias,
+                        r.imported_name = row.imported_name,
+                        r.full_import_name = row.full_import_name
                 """,
-                    batch=other_imports,
+                    batch=normalized_other_imports,
                     file_path=file_path_str,
                 )
 

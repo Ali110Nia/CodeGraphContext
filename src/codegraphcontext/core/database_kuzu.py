@@ -35,18 +35,6 @@ class KuzuDBManager:
         """
         Initializes the manager with default database path or explicit overrides.
         """
-        if (
-            hasattr(self, '_initialized')
-            and self.db_path == db_path
-            and (
-                read_only is None
-                or getattr(self, "read_only", False) == bool(read_only)
-            )
-        ):
-            return
-            
-        self._initialized = False
-
         self.name = "kuzudb"
         # Try to load from config manager
         try:
@@ -54,17 +42,35 @@ class KuzuDBManager:
             config_db_path = get_config_value('KUZUDB_PATH')
         except Exception:
             config_db_path = None
-        
-        # Database path with fallback chain (Explicit > Env > Config/Default)
-        self.db_path = db_path or os.getenv(
+
+        requested_db_path = db_path or os.getenv(
             'KUZUDB_PATH',
             config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / 'kuzudb')
         )
         # Allow explicit parameter override first, then env fallback.
         if read_only is None:
-            self.read_only = os.getenv("CGC_KUZU_READ_ONLY", "false").lower() == "true"
+            requested_read_only = os.getenv("CGC_KUZU_READ_ONLY", "false").lower() == "true"
         else:
-            self.read_only = bool(read_only)
+            requested_read_only = bool(read_only)
+
+        if hasattr(self, "_initialized"):
+            same_path = getattr(self, "db_path", None) == requested_db_path
+            same_read_only = getattr(self, "read_only", False) == requested_read_only
+            if same_path and same_read_only:
+                return
+
+            # Important for context switching: this singleton can be reused with a
+            # different db_path, so stale open connections must be dropped.
+            if self._conn is not None:
+                info_logger(
+                    "KùzuDB manager reconfigured (path/read_only changed); resetting existing connection."
+                )
+                self._conn = None
+                self._db = None
+
+        self._initialized = False
+        self.db_path = requested_db_path
+        self.read_only = requested_read_only
         
         # Ensure directory exists
         os.makedirs(Path(self.db_path).parent, exist_ok=True)
