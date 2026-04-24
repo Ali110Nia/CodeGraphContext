@@ -313,12 +313,23 @@ class SwiftTreeSitterParser:
                     
                     source_text = self._get_node_text(node)
                     
-                    # Extract inheritance/protocol conformance
+                    # Extract inheritance/protocol conformance.
+                    # In tree-sitter-swift the bases appear as one or more
+                    # `inheritance_specifier` siblings under `class_declaration`,
+                    # each wrapping a `user_type` -> `type_identifier`. The
+                    # legacy `type_inheritance_clause` node type is not emitted
+                    # by the current grammar, so the previous logic produced
+                    # empty `bases` for every Swift type.
                     bases = []
                     for child in node.children:
-                        if child.type == "type_inheritance_clause":
+                        if child.type == "inheritance_specifier":
                             for subchild in child.children:
-                                if subchild.type == "type_identifier":
+                                if subchild.type == "user_type":
+                                    for inner in subchild.children:
+                                        if inner.type == "type_identifier":
+                                            bases.append(self._get_node_text(inner))
+                                            break
+                                elif subchild.type == "type_identifier":
                                     bases.append(self._get_node_text(subchild))
                     
                     type_data = {
