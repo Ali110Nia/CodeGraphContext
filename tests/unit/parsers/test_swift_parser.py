@@ -63,6 +63,7 @@ class GenericController {
     assert any(item["name"] == "GenericController" for item in result["classes"])
     assert len(result["imports"]) == 1
     assert any(item["name"] == "sampleCount" for item in result["variables"])
+    assert all(fn.get("is_dependency") is False for fn in result["functions"])
 
 
 def test_parse_swift_inheritance_and_protocol_conformance(swift_parser, temp_test_dir):

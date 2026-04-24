@@ -273,6 +273,7 @@ class SwiftTreeSitterParser:
                         "context": context_name,
                         "class_context": context_name if context_type and ("class" in context_type or "struct" in context_type) else None,
                         "cyclomatic_complexity": self._calculate_complexity(node),
+                        "is_dependency": False,
                     }
                     
                     if self.index_source:
