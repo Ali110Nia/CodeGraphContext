@@ -67,6 +67,10 @@ class TreeSitterParser:
             from .languages.php import PhpTreeSitterParser
 
             self.language_specific_parser = PhpTreeSitterParser(self)
+        elif self.language_name == "lua":
+            from .languages.lua import LuaTreeSitterParser
+
+            self.language_specific_parser = LuaTreeSitterParser(self)
         elif self.language_name == "kotlin":
             from .languages.kotlin import KotlinTreeSitterParser
 

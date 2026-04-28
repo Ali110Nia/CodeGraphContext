@@ -172,6 +172,7 @@ def build_function_call_groups(
                 "php":        {".php"},
                 "dart":       {".dart"},
                 "perl":       {".pl", ".pm"},
+                "lua":        {".lua"},
                 "haskell":    {".hs"},
                 "elixir":     {".ex", ".exs"},
             }

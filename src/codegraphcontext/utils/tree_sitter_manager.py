@@ -33,6 +33,7 @@ LANGUAGE_ALIASES = {
     "go": "go",
     "php": "php",
     ".php": "php",
+    "lua": "lua",
     
     # Canonical names (map to themselves for consistency)
     "python": "python",
