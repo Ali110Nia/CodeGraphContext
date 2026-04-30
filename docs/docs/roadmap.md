@@ -4,7 +4,7 @@ CodeGraphContext is an evolving tool. We believe in transparency about where we 
 
 ## Currently Supported (Stable)
 
-These capabilities are live in version **0.4.4**.
+These capabilities are live in version **0.4.5**.
 
 - **Languages (19):** Python, JavaScript, TypeScript, TSX, Go, Rust, C, C++, Java, Ruby, C#, PHP, Kotlin, Scala, Swift, Dart, Perl, Haskell, and Elixir.
 - **Database backends (4):** FalkorDB Lite (default on Unix with Python 3.12+), FalkorDB Remote, KuzuDB (Windows and embedded fallback), and Neo4j.
