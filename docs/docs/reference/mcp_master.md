@@ -1,6 +1,6 @@
 # MCP Reference & Natural Language Queries
 
-This page lists the **complete MCP tool catalog** for CodeGraphContext **0.4.3** (**21** tools returned by MCP `tools/list`)—every tool your AI assistant (Cursor, Claude, VS Code, and other MCP clients) can invoke.
+This page lists the **complete MCP tool catalog** for CodeGraphContext **0.4.4** (**21** tools returned by MCP `tools/list`)—every tool your AI assistant (Cursor, Claude, VS Code, and other MCP clients) can invoke.
 
 When you ask a question in natural language, the assistant selects one of these tools behind the scenes.
 
