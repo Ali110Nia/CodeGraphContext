@@ -160,7 +160,7 @@ CodeGraphContext supports multiple graph database backends to suit your environm
 | **Setup** | Zero-config / Embedded | Zero-config / In-process | Docker / External |
 | **Platform** | **All (Windows Native, macOS, Linux)** | Unix-only (Linux/macOS/WSL) | All Platforms |
 | **Use Case** | Desktop, IDE, Local development | Specialized Unix development | Enterprise, Massive graphs |
-| **Requirement**| `pip install kuzu` | `pip install falkordblite` | Neo4j Server / Docker |
+| **Requirement**| `pip install real_ladybug` | `pip install falkordblite` | Neo4j Server / Docker |
 | **Speed** | ⚡ Extremely Fast | ⚡ Fast | 🚀 Scalable |
 | **Persistence**| Yes (to disk) | Yes (to disk) | Yes (to disk) |
 
@@ -271,7 +271,7 @@ Use CodeGraphContext as an **MCP server** for AI assistants:
 
 2.  **Database Setup (Automatic)**
     
-    - **KùzuDB (default on Windows):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install kuzu` if needed.
+    - **KùzuDB (default on Windows):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install real_ladybug` if needed.
     - **FalkorDB Lite (typical default on Unix):** When Python 3.12+ and `falkordblite` are available on Unix/macOS/WSL, the embedded backend prefers FalkorDB Lite; otherwise KùzuDB is used.
     - **Neo4j (Alternative):** To use Neo4j instead, or if you prefer a server-based approach, run: `cgc neo4j setup`
 

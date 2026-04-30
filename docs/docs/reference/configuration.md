@@ -123,7 +123,7 @@ KuzuDB is an embedded database (no separate server process). The on-disk locatio
 | **`KUZUDB_PATH`** | Filesystem path for the Kùzu database directory/file. If unset, defaults under `~/.codegraphcontext/global/kuzudb` (or the path resolved for the active **context**). |
 | **Named contexts** | `cgc context create …` stores each context’s database under `~/.codegraphcontext/contexts/<name>/db/…` unless you pass `--db-path`. |
 
-Install the Python package with `pip install kuzu` when using `DEFAULT_DATABASE=kuzudb`.
+Install the Python package with `pip install real_ladybug` when using `DEFAULT_DATABASE=kuzudb`.
 
 ---
 

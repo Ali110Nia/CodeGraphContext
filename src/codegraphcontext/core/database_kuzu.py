@@ -66,7 +66,7 @@ class KuzuDBManager:
         if self._conn is None:
             with self._lock:
                 if self._conn is None:
-                    import kuzu
+                    import real_ladybug as kuzu
                     max_retries = 5
                     for attempt in range(max_retries):
                         try:
@@ -77,7 +77,7 @@ class KuzuDBManager:
                             info_logger("KùzuDB connection established and schema verified")
                             break
                         except ImportError:
-                            error_logger("KùzuDB is not installed. Run 'pip install kuzu'")
+                            error_logger("KùzuDB is not installed. Run 'pip install real_ladybug'")
                             raise ValueError("KùzuDB missing.")
                         except Exception as e:
                             if "lock" in str(e).lower() and attempt < max_retries - 1:
@@ -208,10 +208,10 @@ class KuzuDBManager:
     @staticmethod
     def test_connection(db_path: str = None) -> Tuple[bool, Optional[str]]:
         try:
-            import kuzu
+            import real_ladybug as kuzu
             return True, None
         except ImportError:
-            return False, "KùzuDB is not installed. Run 'pip install kuzu'"
+            return False, "KùzuDB is not installed. Run 'pip install real_ladybug'"
 
 class KuzuDriverWrapper:
     def __init__(self, conn):

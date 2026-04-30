@@ -7,7 +7,7 @@ from codegraphcontext.tools.code_finder import CodeFinder
 from codegraphcontext.tools.indexing.persistence.writer import GraphWriter
 
 
-kuzu = pytest.importorskip("kuzu")
+kuzu = pytest.importorskip("real_ladybug")
 
 
 class _KuzuDBAdapter:
