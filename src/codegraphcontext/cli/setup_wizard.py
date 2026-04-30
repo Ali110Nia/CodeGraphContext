@@ -84,6 +84,7 @@ def _generate_mcp_json(creds):
                         "list_indexed_repositories", "delete_repository", "list_watched_paths", 
                         "unwatch_directory", "visualize_graph_query"
                     ],
+                    "disabledTools": [],
                     "disabled": False
                 },
                 "disabled": False,
@@ -451,6 +452,7 @@ def configure_mcp_client():
                         "list_indexed_repositories", "delete_repository", "list_watched_paths", 
                         "unwatch_directory", "visualize_graph_query"
                     ],
+                    "disabledTools": [],
                     "disabled": False
                 },
                 "disabled": False,
