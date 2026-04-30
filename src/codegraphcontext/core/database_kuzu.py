@@ -156,6 +156,26 @@ class KuzuDBManager:
                     warning_logger(f"Kuzu Schema Rel Error ({table_name}): {e}")
                     debug_log(f"Kuzu Schema Rel Error ({table_name}): {e}")
 
+        self._run_schema_migrations()
+
+    def _run_schema_migrations(self):
+        """Add columns introduced after older local Kùzu databases were created."""
+        migrations = [
+            ("Module", "full_import_name", "STRING"),
+            ("IMPORTS", "full_import_name", "STRING"),
+            ("IMPORTS", "imported_name", "STRING"),
+        ]
+
+        for table_name, column_name, column_type in migrations:
+            try:
+                self._conn.execute(f"ALTER TABLE `{table_name}` ADD {column_name} {column_type}")
+            except Exception as e:
+                err = str(e).lower()
+                if "already exists" in err or "duplicate" in err:
+                    continue
+                warning_logger(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
+                debug_log(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
+
     def close_driver(self):
         """Closes the connection."""
         if self._conn is not None:
