@@ -667,63 +667,38 @@ class CodeFinder:
     def find_all_callers(self, function_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> List[Dict]:
         """Find all direct and indirect callers of a specific function."""
         with self.driver.session() as session:
-            repo_filter = "AND f.path STARTS WITH $repo_path" if repo_path else ""
-            if path:
-                # KùzuDB-compatible: Use anonymous end node and filter with WHERE
-                query = f"""
-                    MATCH p = (f:Function)-[:CALLS*]->()
-                    WITH f as f, p as p, nodes(p) as path_nodes
-                    WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes)] as target
-                    WHERE target.name = $function_name AND target.path = $path {repo_filter}
-                    RETURN DISTINCT f.name AS caller_name, f.path AS caller_file_path, f.line_number AS caller_line_number, f.is_dependency AS caller_is_dependency
-                    ORDER BY caller_is_dependency ASC, caller_file_path, caller_line_number
-                    LIMIT 50
-                """
-                result = session.run(query, function_name=function_name, path=path, repo_path=repo_path)
-            else:
-                # KùzuDB-compatible: Use anonymous end node and filter with WHERE
-                query = f"""
-                    MATCH p = (f:Function)-[:CALLS*]->()
-                    WITH f as f, p as p, nodes(p) as path_nodes
-                    WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes)] as target
-                    WHERE target.name = $function_name {repo_filter}
-                    RETURN DISTINCT f.name AS caller_name, f.path AS caller_file_path, f.line_number AS caller_line_number, f.is_dependency AS caller_is_dependency
-                    ORDER BY caller_is_dependency ASC, caller_file_path, caller_line_number
-                    LIMIT 50
-                """
-                result = session.run(query, function_name=function_name, repo_path=repo_path)
+            repo_filter = "AND f.path STARTS WITH $repo_path " if repo_path else ""
+            path_filter = "AND target.path = $path" if path else ""
+            # KùzuDB-compatible: Use anonymous end node and filter with WHERE
+            query = f"""
+                MATCH p = (f:Function)-[:CALLS*]->()
+                WITH f as f, p as p, nodes(p) as path_nodes
+                WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes) - 1] as target
+                WHERE target.name = $function_name {path_filter} {repo_filter}
+                RETURN DISTINCT f.name AS caller_name, f.path AS caller_file_path, f.line_number AS caller_line_number, f.is_dependency AS caller_is_dependency
+                ORDER BY caller_is_dependency ASC, caller_file_path, caller_line_number
+                LIMIT 50
+            """
+            result = session.run(query, function_name=function_name, path=path, repo_path=repo_path)
             return result.data()
 
     def find_all_callees(self, function_name: str, path: Optional[str] = None, repo_path: Optional[str] = None) -> List[Dict]:
         """Find all direct and indirect callees of a specific function."""
         with self.driver.session() as session:
             repo_filter = "WHERE f.path STARTS WITH $repo_path" if repo_path else ""
-            if path:
-                # KùzuDB-compatible: Use anonymous end node and extract from path
-                query = f"""
-                    MATCH (caller:Function {{name: $function_name, path: $path}})
-                    MATCH p = (caller)-[:CALLS*]->()
-                    WITH p as p, nodes(p) as path_nodes
-                    WITH path_nodes[size(path_nodes)] as f
-                    {repo_filter}
-                    RETURN DISTINCT f.name AS callee_name, f.path AS callee_file_path, f.line_number AS callee_line_number, f.is_dependency AS callee_is_dependency
-                    ORDER BY callee_is_dependency ASC, callee_file_path, callee_line_number
-                    LIMIT 50
-                """
-                result = session.run(query, function_name=function_name, path=path, repo_path=repo_path)
-            else:
-                # KùzuDB-compatible: Use anonymous end node and extract from path
-                query = f"""
-                    MATCH (caller:Function {{name: $function_name}})
-                    MATCH p = (caller)-[:CALLS*]->()
-                    WITH p as p, nodes(p) as path_nodes
-                    WITH path_nodes[size(path_nodes)] as f
-                    {repo_filter}
-                    RETURN DISTINCT f.name AS callee_name, f.path AS callee_file_path, f.line_number AS callee_line_number, f.is_dependency AS callee_is_dependency
-                    ORDER BY callee_is_dependency ASC, callee_file_path, callee_line_number
-                    LIMIT 50
-                """
-                result = session.run(query, function_name=function_name, repo_path=repo_path)
+            path_filter = ", path: $path" if path else ""
+            # KùzuDB-compatible: Use anonymous end node and extract from path
+            query = f"""
+                MATCH (caller:Function {{name: $function_name{path_filter}}})
+                MATCH p = (caller)-[:CALLS*]->()
+                WITH p as p, nodes(p) as path_nodes
+                WITH path_nodes[size(path_nodes) - 1] as f
+                {repo_filter}
+                RETURN DISTINCT f.name AS callee_name, f.path AS callee_file_path, f.line_number AS callee_line_number, f.is_dependency AS callee_is_dependency
+                ORDER BY callee_is_dependency ASC, callee_file_path, callee_line_number
+                LIMIT 50
+            """
+            result = session.run(query, function_name=function_name, path=path, repo_path=repo_path)
             return result.data()
 
     def find_function_call_chain(self, start_function: str, end_function: str, max_depth: int = 5, start_file: Optional[str] = None, end_file: Optional[str] = None, repo_path: Optional[str] = None) -> List[Dict]:
