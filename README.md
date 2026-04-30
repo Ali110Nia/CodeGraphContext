@@ -183,12 +183,12 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 - `neo4j>=5.15.0`
 - `watchdog>=3.0.0`
 - `stdlibs>=2023.11.18`
-- `typer[all]>=0.9.0`
+- `typer>=0.9.0`
 - `rich>=13.7.0`
 - `inquirerpy>=0.3.7`
 - `python-dotenv>=1.0.0`
-- `tree-sitter>=0.21.0`
-- `tree-sitter-language-pack>=0.6.0`
+- `tree-sitter>=0.21.0` (not installed on Python 3.13)
+- `tree-sitter-language-pack>=0.6.0` (not installed on Python 3.13)
 - `pyyaml`
 - `pytest`
 - `nbformat`
