@@ -487,7 +487,7 @@ class CodeFinder:
                     file.is_dependency AS file_is_dependency,
                     repo.name AS repository_name,
                     imports
-                ORDER BY file.is_dependency ASC, file.path
+                ORDER BY file_is_dependency ASC, path
                 LIMIT 20
             """, module_name=module_name, repo_path=repo_path)
             
@@ -874,7 +874,7 @@ class CodeFinder:
                     imp.line_number as import_line_number,
                     file.is_dependency as file_is_dependency,
                     repo.name as repository_name
-                ORDER BY file.is_dependency ASC, file.path
+                ORDER BY file_is_dependency ASC, importer_file_path
                 LIMIT 50
             """, module_name=module_name, repo_path=repo_path)
             
@@ -887,7 +887,7 @@ class CodeFinder:
                 RETURN DISTINCT
                     other_module.name as imported_module,
                     imp.alias as import_alias
-                ORDER BY other_module.name
+                ORDER BY imported_module
                 LIMIT 50
             """, module_name=module_name, repo_path=repo_path)
             
