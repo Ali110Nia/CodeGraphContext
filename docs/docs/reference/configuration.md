@@ -1,6 +1,6 @@
 # Configuration & Settings
 
-CodeGraphContext **0.4.2** is configurable through environment variables, `~/.codegraphcontext/.env`, per-project `.codegraphcontext/.env`, and the `cgc config` CLI.
+CodeGraphContext **0.4.3** is configurable through environment variables, `~/.codegraphcontext/.env`, per-project `.codegraphcontext/.env`, and the `cgc config` CLI.
 
 ## `cgc config` Command
 
