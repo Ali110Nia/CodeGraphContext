@@ -99,7 +99,7 @@ class KuzuDBManager:
         # but we can wrap in try-except or check metadata.
         
         node_tables = [
-            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
+            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, indexed_at STRING, commit_hash STRING, PRIMARY KEY (path)"),
             ("File", "path STRING, name STRING, relative_path STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
             ("Directory", "path STRING, name STRING, PRIMARY KEY (path)"),
             ("Module", "name STRING, lang STRING, full_import_name STRING, PRIMARY KEY (name)"),
@@ -164,6 +164,9 @@ class KuzuDBManager:
             ("Module", "full_import_name", "STRING"),
             ("IMPORTS", "full_import_name", "STRING"),
             ("IMPORTS", "imported_name", "STRING"),
+            # Freshness properties added to Repository in 0.4.6
+            ("Repository", "indexed_at", "STRING"),
+            ("Repository", "commit_hash", "STRING"),
         ]
 
         for table_name, column_name, column_type in migrations:
