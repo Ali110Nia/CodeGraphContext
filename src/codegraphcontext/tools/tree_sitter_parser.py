@@ -96,6 +96,14 @@ class TreeSitterParser:
             from .languages.elixir import ElixirTreeSitterParser
 
             self.language_specific_parser = ElixirTreeSitterParser(self)
+        elif self.language_name == "html":
+            from .languages.html import HTMLTreeSitterParser
+
+            self.language_specific_parser = HTMLTreeSitterParser(self)
+        elif self.language_name == "css":
+            from .languages.css import CSSTreeSitterParser
+
+            self.language_specific_parser = CSSTreeSitterParser(self)
 
     def parse(self, path: Path, is_dependency: bool = False, **kwargs) -> Dict:
         """Dispatches parsing to the language-specific parser."""

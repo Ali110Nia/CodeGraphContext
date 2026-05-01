@@ -103,6 +103,8 @@ LANGUAGE_ALIASES = {
     "elixir": "elixir",
     "ex": "elixir",
     "exs": "elixir",
+    "html": "html",
+    "css": "css",
 }
 
 # Canonical names that differ from tree-sitter-language-pack names

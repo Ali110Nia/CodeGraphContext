@@ -41,6 +41,7 @@ class GraphBuilder:
             ".cjs": "javascript",
             ".go": "go",
             ".ts": "typescript",
+            ".d.ts": "typescript",
             ".tsx": "tsx",
             ".cpp": "cpp",
             ".h": "cpp",
@@ -62,6 +63,8 @@ class GraphBuilder:
             ".pm": "perl",
             ".ex": "elixir",
             ".exs": "elixir",
+            ".html": "html",
+            ".css": "css",
         }
         
         # Files that should be added to the graph as minimal File nodes, even if not parsed
@@ -114,7 +117,7 @@ class GraphBuilder:
 
     def pre_scan_imports(self, files: list[Path]) -> dict:
         """Build global imports_map from language pre-scans (public API for watchers/pipeline)."""
-        return pre_scan_for_imports(files, self.parsers.keys(), self.get_parser)
+        return pre_scan_for_imports(files, self.parsers, self.get_parser)
 
     def _pre_scan_for_imports(self, files: list[Path]) -> dict:
         return self.pre_scan_imports(files)
@@ -192,14 +195,18 @@ class GraphBuilder:
         return {"deleted": True, "path": file_path_str}
 
     def parse_file(self, repo_path: Path, path: Path, is_dependency: bool = False) -> Dict:
-        if path.suffix in self.generic_extensions or path.name in self.generic_filenames:
-            debug_log(f"[parse_file] Adding generic file node for {path}")
-            return {"path": str(path), "error": f"Generic file type {path.suffix or path.name}", "unsupported": False}
+        ext = path.suffix
+        if path.name.endswith(".d.ts"):
+            ext = ".d.ts"
 
-        parser = self.get_parser(path.suffix)
+        if ext in self.generic_extensions or path.name in self.generic_filenames:
+            debug_log(f"[parse_file] Adding generic file node for {path}")
+            return {"path": str(path), "error": f"Generic file type {ext or path.name}", "unsupported": False}
+
+        parser = self.get_parser(ext)
         if not parser:
-            warning_logger(f"No parser found for file extension {path.suffix}. Skipping {path}")
-            return {"path": str(path), "error": f"No parser for {path.suffix}", "unsupported": True}
+            warning_logger(f"No parser found for file extension {ext}. Skipping {path}")
+            return {"path": str(path), "error": f"No parser for {ext}", "unsupported": True}
 
         debug_log(f"[parse_file] Starting parsing for: {path} with {parser.language_name} parser")
         try:
@@ -231,7 +238,15 @@ class GraphBuilder:
                     return 0, 0.0
             else:
                 all_files = path.rglob("*")
-                files = [f for f in all_files if f.is_file() and (f.suffix in supported_extensions or f.name in self.generic_filenames)]
+                files = []
+                for f in all_files:
+                    if not f.is_file():
+                        continue
+                    ext = f.suffix
+                    if f.name.endswith(".d.ts"):
+                        ext = ".d.ts"
+                    if ext in supported_extensions or f.name in self.generic_filenames:
+                        files.append(f)
 
                 ignore_dirs_str = get_config_value("IGNORE_DIRS") or ""
                 if ignore_dirs_str:
