@@ -63,6 +63,16 @@ class GraphBuilder:
             ".ex": "elixir",
             ".exs": "elixir",
         }
+        
+        # Files that should be added to the graph as minimal File nodes, even if not parsed
+        self.generic_extensions = {
+            ".toml", ".sh", ".yaml", ".yml", ".json", ".ini", ".cfg", ".md", ".txt", ".env",
+            ".bat", ".ps1", ".dockerignore", ".gitignore"
+        }
+        self.generic_filenames = {
+            "Dockerfile", "Makefile"
+        }
+        
         self._parsed_cache = {}
         self.create_schema()
 
@@ -182,6 +192,10 @@ class GraphBuilder:
         return {"deleted": True, "path": file_path_str}
 
     def parse_file(self, repo_path: Path, path: Path, is_dependency: bool = False) -> Dict:
+        if path.suffix in self.generic_extensions or path.name in self.generic_filenames:
+            debug_log(f"[parse_file] Adding generic file node for {path}")
+            return {"path": str(path), "error": f"Generic file type {path.suffix or path.name}", "unsupported": False}
+
         parser = self.get_parser(path.suffix)
         if not parser:
             warning_logger(f"No parser found for file extension {path.suffix}. Skipping {path}")
@@ -209,15 +223,15 @@ class GraphBuilder:
 
     def estimate_processing_time(self, path: Path) -> Optional[Tuple[int, float]]:
         try:
-            supported_extensions = self.parsers.keys()
+            supported_extensions = set(self.parsers.keys()) | self.generic_extensions
             if path.is_file():
-                if path.suffix in supported_extensions:
+                if path.suffix in supported_extensions or path.name in self.generic_filenames:
                     files = [path]
                 else:
                     return 0, 0.0
             else:
                 all_files = path.rglob("*")
-                files = [f for f in all_files if f.is_file() and f.suffix in supported_extensions]
+                files = [f for f in all_files if f.is_file() and (f.suffix in supported_extensions or f.name in self.generic_filenames)]
 
                 ignore_dirs_str = get_config_value("IGNORE_DIRS") or ""
                 if ignore_dirs_str:

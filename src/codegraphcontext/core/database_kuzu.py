@@ -171,7 +171,7 @@ class KuzuDBManager:
                 self._conn.execute(f"ALTER TABLE `{table_name}` ADD {column_name} {column_type}")
             except Exception as e:
                 err = str(e).lower()
-                if "already exists" in err or "duplicate" in err:
+                if "already exists" in err or "duplicate" in err or "already has property" in err:
                     continue
                 warning_logger(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
                 debug_log(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
@@ -277,6 +277,32 @@ class KuzuSessionWrapper:
             err_str = str(e).lower()
             if "already exists" in err_str:
                 return KuzuResultWrapper(None)
+            
+            # Fallback for KuzuDB UNWIND bug (unordered_map::at)
+            if "unordered_map::at" in err_str and "UNWIND" in query:
+                unwind_m = re.search(r'UNWIND\s+\$(\w+)\s+AS\s+(\w+)', query)
+                if unwind_m:
+                    batch_param = unwind_m.group(1)
+                    row_var = unwind_m.group(2)
+                    batch_data = parameters.get(batch_param)
+                    if isinstance(batch_data, list):
+                        loop_query = re.sub(r'UNWIND\s+\$\w+\s+AS\s+\w+', '', query, count=1)
+                        # Find all row.prop usages and replace with $row_prop
+                        props_used = set(re.findall(rf'{row_var}\.(\w+)', loop_query))
+                        for p in props_used:
+                            loop_query = loop_query.replace(f"{row_var}.{p}", f"${row_var}_{p}")
+                        
+                        last_result = None
+                        for item in batch_data:
+                            loop_params = parameters.copy()
+                            loop_params.pop(batch_param, None)
+                            for p in props_used:
+                                loop_params[f"{row_var}_{p}"] = item.get(p)
+                            if "uid" in item:
+                                loop_params[f"{row_var}_uid"] = item["uid"]
+                            last_result = self.run(loop_query, **loop_params)
+                        return last_result or KuzuResultWrapper(None)
+
             error_logger(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             debug_log(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             raise
