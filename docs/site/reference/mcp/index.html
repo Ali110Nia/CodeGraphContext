@@ -9,10 +9,10 @@
       
       
       
-        <link rel="prev" href="../../contributing/">
+        <link rel="prev" href="../cli/">
       
       
-        <link rel="next" href="../../roadmap/">
+        <link rel="next" href="../config/">
       
       
         
@@ -23,7 +23,7 @@
     
     
       
-        <title>Troubleshooting - CodeGraphContext</title>
+        <title>MCP Tool Reference - CodeGraphContext</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#troubleshooting" class="md-skip">
+        <a href="#mcp-tool-reference" class="md-skip">
           Skip to content
         </a>
       
@@ -108,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Troubleshooting
+              MCP Tool Reference
             
           </span>
         </div>
@@ -296,10 +296,12 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
+      <li class="md-tabs__item md-tabs__item--active">
         <a href="../cli/" class="md-tabs__link">
           
   
@@ -316,12 +318,10 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
+      <li class="md-tabs__item">
         <a href="../../contributing/" class="md-tabs__link">
           
   
@@ -873,28 +873,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
-        
-          
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
             
   
   
@@ -912,7 +915,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -955,10 +958,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../mcp/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Tool Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -974,6 +1004,243 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#code-search-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Code Search &amp; Discovery
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Code Search &amp; Discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#find_code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        find_code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#list_indexed_repositories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list_indexed_repositories
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relationship-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Relationship Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#analyze_code_relationships" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        analyze_code_relationships
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#calculate_cyclomatic_complexity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        calculate_cyclomatic_complexity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#find_most_complex_functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        find_most_complex_functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#graph-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph Management
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Graph Management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#add_code_to_graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        add_code_to_graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#watch_directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        watch_directory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switch_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switch_context
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#advanced-querying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Advanced Querying
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Advanced Querying">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#execute_cypher_query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        execute_cypher_query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#visualize_graph_query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        visualize_graph_query
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundle-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bundle Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Bundle Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#load_bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load_bundle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#search_registry_bundles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        search_registry_bundles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1018,31 +1285,28 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
             
   
   
@@ -1060,7 +1324,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1103,37 +1367,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Troubleshooting
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -1149,193 +1386,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-installation-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Installation Issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="1. Installation Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#uvx-or-pipx-command-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        uvx or pipx command not found
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#failed-to-install-real_ladybug-kuzudb" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Failed to install real_ladybug (KùzuDB)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-database-connectivity" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Database Connectivity
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="2. Database Connectivity">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-database-backend-available" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "No database backend available"
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#neo4j-authentication-failed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Neo4j: "Authentication failed"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-mcp-integration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. MCP Integration
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="3. MCP Integration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#tools-do-not-appear-in-claudecursor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tools do not appear in Claude/Cursor
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#connection-refused-in-mcp" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Connection refused" in MCP
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-indexing-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Indexing Issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="4. Indexing Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#indexing-is-slow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Indexing is slow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#tree-sitter-parser-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Tree-sitter parser not found"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-diagnostic-command" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. Diagnostic Command
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1431,22 +1481,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-installation-issues" class="md-nav__link">
+  <a href="#code-search-discovery" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Installation Issues
+        Code Search &amp; Discovery
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="1. Installation Issues">
+    <nav class="md-nav" aria-label="Code Search &amp; Discovery">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#uvx-or-pipx-command-not-found" class="md-nav__link">
+  <a href="#find_code" class="md-nav__link">
     <span class="md-ellipsis">
       
-        uvx or pipx command not found
+        find_code
       
     </span>
   </a>
@@ -1454,10 +1504,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#failed-to-install-real_ladybug-kuzudb" class="md-nav__link">
+  <a href="#list_indexed_repositories" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Failed to install real_ladybug (KùzuDB)
+        list_indexed_repositories
       
     </span>
   </a>
@@ -1470,22 +1520,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-database-connectivity" class="md-nav__link">
+  <a href="#relationship-analysis" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Database Connectivity
+        Relationship Analysis
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="2. Database Connectivity">
+    <nav class="md-nav" aria-label="Relationship Analysis">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#no-database-backend-available" class="md-nav__link">
+  <a href="#analyze_code_relationships" class="md-nav__link">
     <span class="md-ellipsis">
       
-        "No database backend available"
+        analyze_code_relationships
       
     </span>
   </a>
@@ -1493,10 +1543,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#neo4j-authentication-failed" class="md-nav__link">
+  <a href="#calculate_cyclomatic_complexity" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Neo4j: "Authentication failed"
+        calculate_cyclomatic_complexity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#find_most_complex_functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        find_most_complex_functions
       
     </span>
   </a>
@@ -1509,22 +1570,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-mcp-integration" class="md-nav__link">
+  <a href="#graph-management" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. MCP Integration
+        Graph Management
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="3. MCP Integration">
+    <nav class="md-nav" aria-label="Graph Management">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#tools-do-not-appear-in-claudecursor" class="md-nav__link">
+  <a href="#add_code_to_graph" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Tools do not appear in Claude/Cursor
+        add_code_to_graph
       
     </span>
   </a>
@@ -1532,10 +1593,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#connection-refused-in-mcp" class="md-nav__link">
+  <a href="#watch_directory" class="md-nav__link">
     <span class="md-ellipsis">
       
-        "Connection refused" in MCP
+        watch_directory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switch_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switch_context
       
     </span>
   </a>
@@ -1548,22 +1620,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-indexing-issues" class="md-nav__link">
+  <a href="#advanced-querying" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Indexing Issues
+        Advanced Querying
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="4. Indexing Issues">
+    <nav class="md-nav" aria-label="Advanced Querying">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#indexing-is-slow" class="md-nav__link">
+  <a href="#execute_cypher_query" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Indexing is slow
+        execute_cypher_query
       
     </span>
   </a>
@@ -1571,10 +1643,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#tree-sitter-parser-not-found" class="md-nav__link">
+  <a href="#visualize_graph_query" class="md-nav__link">
     <span class="md-ellipsis">
       
-        "Tree-sitter parser not found"
+        visualize_graph_query
       
     </span>
   </a>
@@ -1587,13 +1659,41 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#5-diagnostic-command" class="md-nav__link">
+  <a href="#bundle-operations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        5. Diagnostic Command
+        Bundle Operations
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Bundle Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#load_bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load_bundle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#search_registry_bundles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        search_registry_bundles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1617,71 +1717,56 @@
   
 
 
-<h1 id="troubleshooting">Troubleshooting</h1>
-<p>This guide provides solutions for common issues encountered while installing or using CodeGraphContext.</p>
-<h2 id="1-installation-issues">1. Installation Issues</h2>
-<h3 id="uvx-or-pipx-command-not-found"><code>uvx</code> or <code>pipx</code> command not found</h3>
-<ul>
-<li><strong>Solution</strong>: Ensure that your Python environment is correctly set up and that the installation directory for <code>pipx</code> or <code>uv</code> is in your system's <code>PATH</code>.</li>
-<li><strong>Verification</strong>: Run <code>python -m pip install --user pipx</code> followed by <code>pipx ensurepath</code>.</li>
-</ul>
-<h3 id="failed-to-install-real_ladybug-kuzudb">Failed to install <code>real_ladybug</code> (KùzuDB)</h3>
-<ul>
-<li><strong>Cause</strong>: KùzuDB requires C++ build tools on some platforms during installation.</li>
-<li><strong>Solution</strong>:<ul>
-<li><strong>Windows</strong>: Install <a href="https://visualstudio.microsoft.com/visual-cpp-build-tools/">Visual Studio Build Tools</a>.</li>
-<li><strong>macOS</strong>: Run <code>xcode-select --install</code>.</li>
-<li><strong>Linux</strong>: Install <code>build-essential</code> and <code>python3-dev</code>.</li>
-</ul>
-</li>
-</ul>
+<h1 id="mcp-tool-reference">MCP Tool Reference</h1>
+<p>When CodeGraphContext is running as an MCP server, it exposes a set of tools that AI agents can use to explore and understand your codebase.</p>
+<h2 id="code-search-discovery">Code Search &amp; Discovery</h2>
+<h3 id="find_code"><code>find_code</code></h3>
+<p>Find relevant code snippets related to a keyword or phrase.
+*   <strong>Parameters</strong>: <code>query</code> (string), <code>fuzzy_search</code> (boolean), <code>repo_path</code> (optional).</p>
+<h3 id="list_indexed_repositories"><code>list_indexed_repositories</code></h3>
+<p>List all repositories that are currently available in the graph database.</p>
 <hr />
-<h2 id="2-database-connectivity">2. Database Connectivity</h2>
-<h3 id="no-database-backend-available">"No database backend available"</h3>
-<ul>
-<li><strong>Cause</strong>: No supported database is installed or configured.</li>
-<li><strong>Solution</strong>: Install KùzuDB (recommended): <code>pip install real_ladybug</code>.</li>
-</ul>
-<h3 id="neo4j-authentication-failed">Neo4j: "Authentication failed"</h3>
-<ul>
-<li><strong>Cause</strong>: Incorrect credentials in environment variables or <code>.env</code> file.</li>
-<li><strong>Solution</strong>: Verify <code>NEO4J_USERNAME</code> and <code>NEO4J_PASSWORD</code>. Run <code>cgc config list</code> to check current settings.</li>
-</ul>
+<h2 id="relationship-analysis">Relationship Analysis</h2>
+<h3 id="analyze_code_relationships"><code>analyze_code_relationships</code></h3>
+<p>The primary tool for deep architectural analysis.
+*   <strong>Parameters</strong>:
+    *   <code>query_type</code>: <code>find_callers</code>, <code>find_callees</code>, <code>class_hierarchy</code>, <code>module_deps</code>, <code>dead_code</code>, etc.
+    *   <code>target</code>: The function, class, or module to analyze.
+    *   <code>repo_path</code>: (Optional) Restrict search to a specific repo.</p>
+<h3 id="calculate_cyclomatic_complexity"><code>calculate_cyclomatic_complexity</code></h3>
+<p>Get the complexity score of a specific function.
+*   <strong>Parameters</strong>: <code>function_name</code> (string), <code>path</code> (optional).</p>
+<h3 id="find_most_complex_functions"><code>find_most_complex_functions</code></h3>
+<p>Identify technical debt by listing the most complex functions in the codebase.
+*   <strong>Parameters</strong>: <code>limit</code> (default: 10).</p>
 <hr />
-<h2 id="3-mcp-integration">3. MCP Integration</h2>
-<h3 id="tools-do-not-appear-in-claudecursor">Tools do not appear in Claude/Cursor</h3>
-<ul>
-<li><strong>Check 1</strong>: Ensure the MCP server is running correctly. Run <code>cgc mcp</code> in your terminal. It should wait for input without exiting immediately.</li>
-<li><strong>Check 2</strong>: Verify the path to the <code>cgc</code> executable in your configuration file. Use absolute paths if necessary.</li>
-<li><strong>Check 3</strong>: Look at the logs. CGC logs to <code>~/.codegraphcontext/logs/mcp.log</code> by default.</li>
-</ul>
-<h3 id="connection-refused-in-mcp">"Connection refused" in MCP</h3>
-<ul>
-<li><strong>Cause</strong>: The database backend is not reachable by the MCP server.</li>
-<li><strong>Solution</strong>: Ensure your database (e.g., Neo4j Docker container) is running before starting the MCP server.</li>
-</ul>
+<h2 id="graph-management">Graph Management</h2>
+<h3 id="add_code_to_graph"><code>add_code_to_graph</code></h3>
+<p>Instruct the agent to index a new directory or file.
+*   <strong>Parameters</strong>: <code>path</code> (string), <code>is_dependency</code> (boolean).</p>
+<h3 id="watch_directory"><code>watch_directory</code></h3>
+<p>Start monitoring a directory for real-time updates.
+*   <strong>Parameters</strong>: <code>path</code> (string).</p>
+<h3 id="switch_context"><code>switch_context</code></h3>
+<p>Switch the server's focus to a different indexed project.
+*   <strong>Parameters</strong>: <code>context_path</code> (string).</p>
 <hr />
-<h2 id="4-indexing-issues">4. Indexing Issues</h2>
-<h3 id="indexing-is-slow">Indexing is slow</h3>
-<ul>
-<li><strong>Tip</strong>: Use the <code>watch</code> command for incremental updates instead of full re-indexes.</li>
-<li><strong>Tip</strong>: Exclude large, irrelevant directories (like <code>node_modules</code> or <code>dist</code>) using a <code>.cgcignore</code> file.</li>
-</ul>
-<h3 id="tree-sitter-parser-not-found">"Tree-sitter parser not found"</h3>
-<ul>
-<li><strong>Cause</strong>: The parser for a specific language failed to load or is not supported.</li>
-<li><strong>Solution</strong>: Ensure you are using a recent version of <code>codegraphcontext</code>. Run <code>pip install --upgrade codegraphcontext</code>.</li>
-</ul>
+<h2 id="advanced-querying">Advanced Querying</h2>
+<h3 id="execute_cypher_query"><code>execute_cypher_query</code></h3>
+<p>A "power user" tool that allows the AI to run raw Cypher queries against the graph.
+*   <strong>Parameters</strong>: <code>cypher_query</code> (string).
+*   <strong>Schema</strong>: Nodes include <code>Repository</code>, <code>File</code>, <code>Module</code>, <code>Class</code>, <code>Function</code>. Relationships include <code>CONTAINS</code>, <code>CALLS</code>, <code>IMPORTS</code>, <code>INHERITS</code>.</p>
+<h3 id="visualize_graph_query"><code>visualize_graph_query</code></h3>
+<p>Generates a visualization URL for a specific Cypher query.
+*   <strong>Parameters</strong>: <code>cypher_query</code> (string).</p>
 <hr />
-<h2 id="5-diagnostic-command">5. Diagnostic Command</h2>
-<p>If you are still having trouble, run the built-in diagnostic tool:</p>
-<div class="highlight"><pre><span></span><code>cgc<span class="w"> </span>doctor
-</code></pre></div>
-<p>This command checks for:
-*   Python version compatibility.
-*   Installed database backends.
-*   Active configuration settings.
-*   Write permissions for log and data directories.</p>
+<h2 id="bundle-operations">Bundle Operations</h2>
+<h3 id="load_bundle"><code>load_bundle</code></h3>
+<p>Load a portable <code>.cgc</code> bundle into the session.
+*   <strong>Parameters</strong>: <code>bundle_name</code> (string).</p>
+<h3 id="search_registry_bundles"><code>search_registry_bundles</code></h3>
+<p>Search for available bundles in the remote registry.
+*   <strong>Parameters</strong>: <code>query</code> (string).</p>
 
 
 
