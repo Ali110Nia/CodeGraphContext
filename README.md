@@ -97,7 +97,7 @@ A powerful **MCP server** and **CLI toolkit** that indexes local code into a gra
 ---
 
 ## Project Details
-- **Version:** 0.4.2
+- **Version:** 0.4.5
 - **Authors:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **License:** MIT License (See [LICENSE](LICENSE) for details)
 - **Website:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -160,7 +160,7 @@ CodeGraphContext supports multiple graph database backends to suit your environm
 | **Setup** | Zero-config / Embedded | Zero-config / In-process | Docker / External |
 | **Platform** | **All (Windows Native, macOS, Linux)** | Unix-only (Linux/macOS/WSL) | All Platforms |
 | **Use Case** | Desktop, IDE, Local development | Specialized Unix development | Enterprise, Massive graphs |
-| **Requirement**| `pip install kuzu` | `pip install falkordblite` | Neo4j Server / Docker |
+| **Requirement**| `pip install real_ladybug` | `pip install falkordblite` | Neo4j Server / Docker |
 | **Speed** | ⚡ Extremely Fast | ⚡ Fast | 🚀 Scalable |
 | **Persistence**| Yes (to disk) | Yes (to disk) | Yes (to disk) |
 
@@ -183,12 +183,12 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 - `neo4j>=5.15.0`
 - `watchdog>=3.0.0`
 - `stdlibs>=2023.11.18`
-- `typer[all]>=0.9.0`
+- `typer>=0.9.0`
 - `rich>=13.7.0`
 - `inquirerpy>=0.3.7`
 - `python-dotenv>=1.0.0`
-- `tree-sitter>=0.21.0`
-- `tree-sitter-language-pack>=0.6.0`
+- `tree-sitter>=0.21.0` (not installed on Python 3.13)
+- `tree-sitter-language-pack>=0.6.0` (not installed on Python 3.13)
 - `pyyaml`
 - `pytest`
 - `nbformat`
@@ -271,7 +271,7 @@ Use CodeGraphContext as an **MCP server** for AI assistants:
 
 2.  **Database Setup (Automatic)**
     
-    - **KùzuDB (default on Windows):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install kuzu` if needed.
+    - **KùzuDB (default on Windows):** Runs natively on Windows, macOS, and Linux. On Windows it is the usual embedded choice; `pip install real_ladybug` if needed.
     - **FalkorDB Lite (typical default on Unix):** When Python 3.12+ and `falkordblite` are available on Unix/macOS/WSL, the embedded backend prefers FalkorDB Lite; otherwise KùzuDB is used.
     - **Neo4j (Alternative):** To use Neo4j instead, or if you prefer a server-based approach, run: `cgc neo4j setup`
 

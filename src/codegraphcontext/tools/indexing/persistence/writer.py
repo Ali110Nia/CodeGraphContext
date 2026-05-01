@@ -278,19 +278,28 @@ class GraphWriter:
             js_imports = []
             other_imports = []
             for imp in file_data.get("imports", []):
-                if lang == "javascript":
+                if lang in {"javascript", "typescript", "tsx"}:
                     module_name = imp.get("source")
                     if module_name:
                         js_imports.append(
                             {
                                 "module_name": module_name,
                                 "imported_name": imp.get("name", "*"),
-                                "alias": imp.get("alias"),
-                                "line_number": imp.get("line_number"),
+                                "alias": imp.get("alias") or "",
+                                "line_number": imp.get("line_number") or 0,
                             }
                         )
                 else:
-                    other_imports.append(imp)
+                    module_name = imp.get("name") or imp.get("source") or imp.get("full_import_name")
+                    if module_name:
+                        other_imports.append(
+                            {
+                                "name": module_name,
+                                "alias": imp.get("alias") or "",
+                                "full_import_name": imp.get("full_import_name") or module_name,
+                                "line_number": imp.get("line_number") or 0,
+                            }
+                        )
 
             if js_imports:
                 session.run(
@@ -313,8 +322,7 @@ class GraphWriter:
                     UNWIND $batch AS row
                     MATCH (f:File {path: $file_path})
                     MERGE (m:Module {name: row.name})
-                    SET m.alias = row.alias,
-                        m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
+                    SET m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
                     MERGE (f)-[r:IMPORTS]->(m)
                     SET r.line_number = row.line_number,
                         r.alias = row.alias

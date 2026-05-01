@@ -22,7 +22,7 @@ import importlib.util
 def _is_kuzudb_available() -> bool:
     """Check if KùzuDB is installed."""
     try:
-        return importlib.util.find_spec("kuzu") is not None
+        return importlib.util.find_spec("real_ladybug") is not None
     except ImportError:
         return False
 
@@ -70,7 +70,7 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
         db_type = db_type.lower()
         if db_type == 'kuzudb':
             if not _is_kuzudb_available():
-                raise ValueError("Database set to 'kuzudb' but Kùzu is not installed.\nRun 'pip install kuzu'")
+                raise ValueError("Database set to 'kuzudb' but Kùzu is not installed.\nRun 'pip install real_ladybug'")
             from .database_kuzu import KuzuDBManager
             info_logger(f"Using KùzuDB (explicit) at {db_path or 'default path'}")
             return KuzuDBManager(db_path=db_path)
@@ -147,7 +147,7 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
         return DatabaseManager()
 
     error_msg = "No database backend available.\n"
-    error_msg += "Recommended: Install KùzuDB for zero-config ('pip install kuzu')\n"
+    error_msg += "Recommended: Install KùzuDB for zero-config ('pip install real_ladybug')\n"
 
     if platform.system() != "Windows":
         error_msg += "Alternative: Install FalkorDB Lite ('pip install falkordblite')\n"
