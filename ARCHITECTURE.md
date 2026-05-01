@@ -41,7 +41,7 @@ CodeGraphContext (CGC) transforms source code repositories into a **queryable gr
 - **Viz Server** — FastAPI server serving the built React visualization
 - **Website** — Vite + React SPA with in-browser Tree-sitter parsing and graph visualization
 
-The system supports **4 database backends** (FalkorDB Lite, FalkorDB Remote, KuzuDB, Neo4j), **19 programming languages** via Tree-sitter, and optional **SCIP-based** precise indexing.
+The system supports **5 database backends** (FalkorDB Lite, FalkorDB Remote, KuzuDB, Neo4j, Nornic DB), **19 programming languages** via Tree-sitter, and optional **SCIP-based** precise indexing.
 
 ---
 
@@ -84,6 +84,7 @@ graph TB
         FalkorR["FalkorDB Remote<br/>Server"]
         Kuzu["KuzuDB<br/>Embedded<br/>All Platforms"]
         Neo4j["Neo4j<br/>Server<br/>Enterprise"]
+        Nornic["Nornic DB<br/>Neo4j-compatible"]
     end
 
     IDE -->|"stdio JSON-RPC"| MCP
@@ -112,6 +113,7 @@ graph TB
     DB --- FalkorR
     DB --- Kuzu
     DB --- Neo4j
+    DB --- Nornic
 ```
 
 ### 2.2 Class Diagram — Core Classes (UML)
@@ -210,6 +212,10 @@ classDiagram
         +host: str
         +port: int
     }
+    class NornicDBManager {
+        +uri: str
+        +username: str
+    }
 
     MCPServer --> GraphBuilder
     MCPServer --> CodeFinder
@@ -224,6 +230,7 @@ classDiagram
     KuzuDBManager ..|> DatabaseManager
     Neo4jManager ..|> DatabaseManager
     FalkorDBRemoteManager ..|> DatabaseManager
+    NornicDBManager ..|> DatabaseManager
 ```
 
 ### 2.3 Deployment Diagram
@@ -445,6 +452,7 @@ cgc
 | FalkorDB Remote | `database_falkordb_remote.py` | 200 | Remote FalkorDB server | Any (needs `FALKORDB_HOST`) |
 | KuzuDB | `database_kuzu.py` | 627 | Embedded Kuzu | All platforms (Windows default) |
 | Neo4j | `database.py` | 274 | Neo4j server (bolt) | Any (needs credentials) |
+| Nornic DB | `database_nornic.py` | 180 | Neo4j-compatible Nornic DB | Any (needs credentials) |
 
 All backends implement a **common compatibility interface**: `get_driver()`, `close_driver()`, `is_connected()`, `session()` context manager, with wrapper classes (`DriverWrapper`, `SessionWrapper`, `RecordWrapper`, `ResultWrapper`) to normalize Cypher result access.
 

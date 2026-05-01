@@ -52,7 +52,15 @@ def _is_neo4j_configured() -> bool:
         os.getenv('NEO4J_PASSWORD')
     ])
 
-def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManager', 'FalkorDBManager', 'FalkorDBRemoteManager', 'KuzuDBManager']:
+def _is_nornic_configured() -> bool:
+    """Check if Nornic is configured with credentials."""
+    return all([
+        os.getenv('NORNIC_URI'),
+        os.getenv('NORNIC_USERNAME'),
+        os.getenv('NORNIC_PASSWORD')
+    ])
+
+def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManager', 'FalkorDBManager', 'FalkorDBRemoteManager', 'KuzuDBManager', 'NornicDBManager']:
     """
     Factory function to get the appropriate database manager based on configuration.
 
@@ -111,8 +119,15 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
             from .database import DatabaseManager
             info_logger("Using Neo4j Server (explicit)")
             return DatabaseManager()
+
+        elif db_type == 'nornic':
+            if not _is_nornic_configured():
+                raise ValueError("Database set to 'nornic' but it is not configured.")
+            from .database_nornic import NornicDBManager
+            info_logger("Using Nornic DB (explicit)")
+            return NornicDBManager()
         else:
-            raise ValueError(f"Unknown database type: '{db_type}'. Use 'kuzudb', 'falkordb', 'falkordb-remote', or 'neo4j'.")
+            raise ValueError(f"Unknown database type: '{db_type}'. Use 'kuzudb', 'falkordb', 'falkordb-remote', 'neo4j', or 'nornic'.")
 
     # Implicit: remote FalkorDB when FALKORDB_HOST is set (explicit infra signal)
     if _is_falkordb_remote_configured():
@@ -146,6 +161,12 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
         info_logger("Using Neo4j Server (auto-detected)")
         return DatabaseManager()
 
+    # Implicit: Nornic when configured
+    if _is_nornic_configured():
+        from .database_nornic import NornicDBManager
+        info_logger("Using Nornic DB (auto-detected)")
+        return NornicDBManager()
+
     error_msg = "No database backend available.\n"
     error_msg += "Recommended: Install KùzuDB for zero-config ('pip install real_ladybug')\n"
 
@@ -161,5 +182,6 @@ from .database import DatabaseManager
 from .database_falkordb import FalkorDBManager
 from .database_falkordb_remote import FalkorDBRemoteManager
 from .database_kuzu import KuzuDBManager
+from .database_nornic import NornicDBManager
 
-__all__ = ['DatabaseManager', 'FalkorDBManager', 'FalkorDBRemoteManager', 'KuzuDBManager', 'get_database_manager']
+__all__ = ['DatabaseManager', 'FalkorDBManager', 'FalkorDBRemoteManager', 'KuzuDBManager', 'NornicDBManager', 'get_database_manager']
