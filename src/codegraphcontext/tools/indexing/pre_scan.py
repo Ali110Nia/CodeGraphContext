@@ -25,6 +25,7 @@ def _register_prescans() -> Dict[str, _PreScanFn]:
     from ..languages import dart as dart_lang_module
     from ..languages import perl as perl_lang_module
     from ..languages import php as php_lang_module
+    from ..languages import lua as lua_lang_module
     from ..languages import haskell as haskell_lang_module
     from ..languages import elixir as elixir_lang_module
     from ..languages import html as html_lang_module
@@ -70,6 +71,7 @@ def _register_prescans() -> Dict[str, _PreScanFn]:
         ".pl": lambda files, gp: perl_lang_module.pre_scan_perl(files, gp(".pl")),
         ".pm": lambda files, gp: perl_lang_module.pre_scan_perl(files, gp(".pm")),
         ".php": lambda files, gp: php_lang_module.pre_scan_php(files, gp(".php")),
+        ".lua": lambda files, gp: lua_lang_module.pre_scan_lua(files, gp(".lua")),
         ".hs": lambda files, gp: haskell_lang_module.pre_scan_haskell(files, gp(".hs")),
         ".ex": lambda files, gp: elixir_lang_module.pre_scan_elixir(files, gp(".ex")),
         ".exs": lambda files, gp: elixir_lang_module.pre_scan_elixir(files, gp(".exs")),

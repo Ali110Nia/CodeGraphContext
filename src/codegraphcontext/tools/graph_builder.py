@@ -61,6 +61,7 @@ class GraphBuilder:
             ".dart": "dart",
             ".pl": "perl",
             ".pm": "perl",
+            ".lua": "lua",
             ".ex": "elixir",
             ".exs": "elixir",
             ".html": "html",
