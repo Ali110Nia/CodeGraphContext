@@ -124,9 +124,10 @@ def find_code(code_finder: CodeFinder, **args) -> Dict[str, Any]:
     repo_path = args.get("repo_path")
 
     if fuzzy_search:
-        # Preserve case for Lucene / Levenshtein name matching; lowercasing breaks
-        # camelCase fuzzy hits (see GH #758).
-        query = query.replace("_", " ").strip()
+        # For Lucene backends the replace('_', ' ') improves token splitting.
+        # For portable (Kùzu/FalkorDB) backends _find_by_name_fuzzy_portable
+        # handles normalisation internally, so we leave the query as-is here.
+        pass  # transformation deferred to find_related_code / _find_by_name_fuzzy_portable
 
     try:
         debug_log(f"Finding code for query: {query} with fuzzy_search={fuzzy_search}, edit_distance={edit_distance}, repo_path={repo_path}")
