@@ -114,7 +114,6 @@ def _apply_response_token_limit(tool_name: str, text: str) -> str:
     return text[:budget] + notice
 
 
-
 class MCPServer:
     """
     The main MCP Server class.
