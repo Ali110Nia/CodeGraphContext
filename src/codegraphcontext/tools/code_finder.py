@@ -24,6 +24,20 @@ def _levenshtein_distance(a: str, b: str) -> int:
         prev = curr
     return prev[-1]
 
+
+def _normalize_identifier(s: str) -> str:
+    """Lowercase and strip separator chars so camelCase / snake_case / spaces
+    all compare on equal footing.
+
+    Examples::
+
+        _normalize_identifier('myFunction')   -> 'myfunction'
+        _normalize_identifier('my_function')  -> 'myfunction'
+        _normalize_identifier('my function')  -> 'myfunction'
+        _normalize_identifier('MyFunc tion')  -> 'myfunction'
+    """
+    return s.lower().replace('_', '').replace(' ', '')
+
 class CodeFinder:
     """Module for finding relevant code snippets and analyzing relationships."""
 
@@ -64,11 +78,18 @@ class CodeFinder:
         edit_distance: int,
         repo_path: Optional[str],
     ) -> List[Dict]:
-        """Fuzzy name match for backends without Lucene fuzzy syntax (Kùzu, FalkorDB, …)."""
+        """Fuzzy name match for backends without Lucene fuzzy syntax (Kùzu, FalkorDB, …).
+
+        Compares both the raw query and its identifier-normalised form against each
+        candidate name, taking the minimum distance.  This lets camelCase queries
+        match snake_case stored names and vice-versa without inflating the distance.
+        """
         if not search_term.strip():
             return []
         where_clause = "WHERE node.path STARTS WITH $repo_path" if repo_path else ""
-        limit_tail = "" if repo_path else " LIMIT 8000"
+        # Without a repo filter we must cap the candidate scan.  20 000 is enough to
+        # cover any realistic single-repo codebase while keeping latency acceptable.
+        limit_tail = "" if repo_path else " LIMIT 20000"
         params: Dict[str, Any] = {}
         if repo_path:
             params["repo_path"] = repo_path
@@ -81,13 +102,27 @@ class CodeFinder:
         """
         with self.driver.session() as session:
             rows = session.run(query, **params).data()
-        q = search_term.lower()
+
+        # Two query forms:
+        #   q_raw  – lowercased original (e.g. "myFuncton" → "myfuncton")
+        #   q_norm – separator-stripped  (e.g. "my_functon" → "myfuncton")
+        # Using the minimum of both distances avoids the space-inflation bug where
+        # the handler's replace('_', ' ') turns "my_functon" into "my functon",
+        # which compares poorly against camelCase stored names.
+        q_raw = search_term.lower()
+        q_norm = _normalize_identifier(search_term)
+
         scored: List[tuple[int, Dict]] = []
         for row in rows:
             nm = row.get("name")
             if not isinstance(nm, str):
                 continue
-            d = _levenshtein_distance(q, nm.lower())
+            nm_lower = nm.lower()
+            nm_norm = _normalize_identifier(nm)
+            d = min(
+                _levenshtein_distance(q_raw, nm_lower),
+                _levenshtein_distance(q_norm, nm_norm),
+            )
             if d <= edit_distance:
                 scored.append((d, row))
         scored.sort(key=lambda x: x[0])
@@ -256,14 +291,24 @@ class CodeFinder:
 
     def find_related_code(self, user_query: str, fuzzy_search: bool, edit_distance: int, repo_path: Optional[str] = None) -> Dict[str, Any]:
         """Find code related to a query using multiple search strategies"""
-        # Neo4j full-text uses Lucene fuzzy tokens (e.g. name:foo~2). Kùzu/FalkorDB use
-        # portable Levenshtein over candidate names instead.
-        lucene_fuzzy_query = (
-            " ".join(f"{t}~{edit_distance}" for t in user_query.split())
-            if fuzzy_search and not self._lacks_native_fulltext
-            else user_query
-        )
-        name_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._lacks_native_fulltext) else user_query
+        # For Lucene backends: split snake_case/underscore tokens so Lucene sees
+        # individual words, then append the fuzzy modifier.
+        # For portable backends: keep user_query verbatim — _find_by_name_fuzzy_portable
+        # handles normalisation via _normalize_identifier.
+        if fuzzy_search and not self._lacks_native_fulltext:
+            lucene_base = user_query.replace("_", " ").strip()
+            lucene_fuzzy_query = " ".join(f"{t}~{edit_distance}" for t in lucene_base.split())
+        else:
+            lucene_fuzzy_query = user_query
+
+        # For portable backends, always pass the *original* query to the fuzzy name
+        # matcher — _find_by_name_fuzzy_portable applies its own normalisation.
+        # For Lucene-capable backends, use the Lucene fuzzy token form.
+        if self._lacks_native_fulltext:
+            name_lookup_q = user_query
+        else:
+            name_lookup_q = lucene_fuzzy_query if fuzzy_search else user_query
+
         content_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._lacks_native_fulltext) else user_query
 
         results: Dict[str, Any] = {
