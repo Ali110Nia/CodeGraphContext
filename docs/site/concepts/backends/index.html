@@ -9,10 +9,10 @@
       
       
       
-        <link rel="prev" href="../../contributing/">
+        <link rel="prev" href="../graph-model/">
       
       
-        <link rel="next" href="../../roadmap/">
+        <link rel="next" href="../architecture/">
       
       
         
@@ -23,7 +23,7 @@
     
     
       
-        <title>Troubleshooting - CodeGraphContext</title>
+        <title>Database Backends - CodeGraphContext</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#troubleshooting" class="md-skip">
+        <a href="#database-backends" class="md-skip">
           Skip to content
         </a>
       
@@ -108,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Troubleshooting
+              Database Backends
             
           </span>
         </div>
@@ -256,11 +256,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../concepts/graph-model/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../graph-model/" class="md-tabs__link">
           
   
   
@@ -300,7 +302,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../cli/" class="md-tabs__link">
+        <a href="../../reference/cli/" class="md-tabs__link">
           
   
   
@@ -316,12 +318,10 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
+      <li class="md-tabs__item">
         <a href="../../contributing/" class="md-tabs__link">
           
   
@@ -555,28 +555,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
             
   
   
@@ -594,7 +597,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -612,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/graph-model/" class="md-nav__link">
+      <a href="../graph-model/" class="md-nav__link">
         
   
   
@@ -637,10 +640,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../concepts/backends/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database Backends
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -656,6 +686,81 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#comparison-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-kuzudb-embedded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. KùzuDB (Embedded)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-falkordb-high-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. FalkorDB (High Performance)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-neo4j-enterprise" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Neo4j (Enterprise)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backend-selection-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend Selection Logic
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -668,7 +773,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/architecture/" class="md-nav__link">
+      <a href="../architecture/" class="md-nav__link">
         
   
   
@@ -930,7 +1035,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cli/" class="md-nav__link">
+      <a href="../../reference/cli/" class="md-nav__link">
         
   
   
@@ -958,7 +1063,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../mcp/" class="md-nav__link">
+      <a href="../../reference/mcp/" class="md-nav__link">
         
   
   
@@ -986,7 +1091,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../config/" class="md-nav__link">
+      <a href="../../reference/config/" class="md-nav__link">
         
   
   
@@ -1018,31 +1123,28 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
             
   
   
@@ -1060,7 +1162,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1103,37 +1205,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Troubleshooting
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../reference/troubleshooting/" class="md-nav__link">
         
   
   
@@ -1149,193 +1224,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-installation-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Installation Issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="1. Installation Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#uvx-or-pipx-command-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        uvx or pipx command not found
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#failed-to-install-real_ladybug-kuzudb" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Failed to install real_ladybug (KùzuDB)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-database-connectivity" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Database Connectivity
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="2. Database Connectivity">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-database-backend-available" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "No database backend available"
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#neo4j-authentication-failed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Neo4j: "Authentication failed"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-mcp-integration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. MCP Integration
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="3. MCP Integration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#tools-do-not-appear-in-claudecursor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tools do not appear in Claude/Cursor
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#connection-refused-in-mcp" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Connection refused" in MCP
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-indexing-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Indexing Issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="4. Indexing Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#indexing-is-slow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Indexing is slow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#tree-sitter-parser-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Tree-sitter parser not found"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-diagnostic-command" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. Diagnostic Command
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1431,166 +1319,54 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-installation-issues" class="md-nav__link">
+  <a href="#comparison-overview" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Installation Issues
+        Comparison Overview
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="1. Installation Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#uvx-or-pipx-command-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        uvx or pipx command not found
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#failed-to-install-real_ladybug-kuzudb" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Failed to install real_ladybug (KùzuDB)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-database-connectivity" class="md-nav__link">
+  <a href="#1-kuzudb-embedded" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Database Connectivity
+        1. KùzuDB (Embedded)
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="2. Database Connectivity">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-database-backend-available" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "No database backend available"
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#neo4j-authentication-failed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Neo4j: "Authentication failed"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-mcp-integration" class="md-nav__link">
+  <a href="#2-falkordb-high-performance" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. MCP Integration
+        2. FalkorDB (High Performance)
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="3. MCP Integration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#tools-do-not-appear-in-claudecursor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tools do not appear in Claude/Cursor
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#connection-refused-in-mcp" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Connection refused" in MCP
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-indexing-issues" class="md-nav__link">
+  <a href="#3-neo4j-enterprise" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Indexing Issues
+        3. Neo4j (Enterprise)
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="4. Indexing Issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#indexing-is-slow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Indexing is slow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#tree-sitter-parser-not-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        "Tree-sitter parser not found"
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#5-diagnostic-command" class="md-nav__link">
+  <a href="#backend-selection-logic" class="md-nav__link">
     <span class="md-ellipsis">
       
-        5. Diagnostic Command
+        Backend Selection Logic
       
     </span>
   </a>
@@ -1617,71 +1393,88 @@
   
 
 
-<h1 id="troubleshooting">Troubleshooting</h1>
-<p>This guide provides solutions for common issues encountered while installing or using CodeGraphContext.</p>
-<h2 id="1-installation-issues">1. Installation Issues</h2>
-<h3 id="uvx-or-pipx-command-not-found"><code>uvx</code> or <code>pipx</code> command not found</h3>
+<h1 id="database-backends">Database Backends</h1>
+<p>CodeGraphContext is backend-agnostic. It supports multiple graph database engines to balance performance, ease of use, and scalability.</p>
+<h2 id="comparison-overview">Comparison Overview</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Backend</th>
+<th style="text-align: left;">Mode</th>
+<th style="text-align: left;">Best For</th>
+<th style="text-align: left;">Complexity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>KùzuDB</strong></td>
+<td style="text-align: left;">Embedded</td>
+<td style="text-align: left;">Local development, quick starts</td>
+<td style="text-align: left;">Zero Config</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>FalkorDB</strong></td>
+<td style="text-align: left;">Embedded/Remote</td>
+<td style="text-align: left;">High-performance semantic queries</td>
+<td style="text-align: left;">Low to Medium</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Neo4j</strong></td>
+<td style="text-align: left;">Server</td>
+<td style="text-align: left;">Enterprise-scale, visualization</td>
+<td style="text-align: left;">High</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="1-kuzudb-embedded">1. KùzuDB (Embedded)</h2>
+<p>KùzuDB is the <strong>default recommendation</strong> for most users. It is an extremely lightweight, in-process graph database.</p>
 <ul>
-<li><strong>Solution</strong>: Ensure that your Python environment is correctly set up and that the installation directory for <code>pipx</code> or <code>uv</code> is in your system's <code>PATH</code>.</li>
-<li><strong>Verification</strong>: Run <code>python -m pip install --user pipx</code> followed by <code>pipx ensurepath</code>.</li>
+<li><strong>Zero Infrastructure</strong>: No Docker or separate services required.</li>
+<li><strong>Performance</strong>: Optimized for analytical queries (OLAP) on graph data.</li>
+<li><strong>Storage</strong>: Saves the graph as a directory on your local machine (usually in <code>.codegraphcontext/</code>).</li>
 </ul>
-<h3 id="failed-to-install-real_ladybug-kuzudb">Failed to install <code>real_ladybug</code> (KùzuDB)</h3>
+<p><strong>Installation</strong>:
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>real_ladybug
+</code></pre></div></p>
+<h2 id="2-falkordb-high-performance">2. FalkorDB (High Performance)</h2>
+<p>FalkorDB is a low-latency graph database designed for massive throughput.</p>
 <ul>
-<li><strong>Cause</strong>: KùzuDB requires C++ build tools on some platforms during installation.</li>
-<li><strong>Solution</strong>:<ul>
-<li><strong>Windows</strong>: Install <a href="https://visualstudio.microsoft.com/visual-cpp-build-tools/">Visual Studio Build Tools</a>.</li>
-<li><strong>macOS</strong>: Run <code>xcode-select --install</code>.</li>
-<li><strong>Linux</strong>: Install <code>build-essential</code> and <code>python3-dev</code>.</li>
+<li><strong>Speed</strong>: One of the fastest graph engines available for relationship traversal.</li>
+<li><strong>Modes</strong>:<ul>
+<li><strong>FalkorDB Lite</strong>: Runs as an embedded engine (Linux/macOS only).</li>
+<li><strong>FalkorDB Remote</strong>: Connects to a standard Redis-based FalkorDB instance.</li>
 </ul>
 </li>
 </ul>
+<p><strong>Installation (Lite)</strong>:
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>falkordblite
+</code></pre></div></p>
+<h2 id="3-neo4j-enterprise">3. Neo4j (Enterprise)</h2>
+<p>Neo4j is the industry standard for graph databases. Use Neo4j when you need advanced visualization or are working with exceptionally large datasets.</p>
+<ul>
+<li><strong>Visualization</strong>: Use the <strong>Neo4j Browser</strong> (<code>localhost:7474</code>) to see your code graph in a rich, interactive UI.</li>
+<li><strong>Scalability</strong>: Handles billions of nodes and relationships across distributed environments.</li>
+</ul>
+<p><strong>Setup</strong>:
+1.  Start Neo4j via Docker or use AuraDB.
+2.  Configure CGC to use Neo4j:
+    <div class="highlight"><pre><span></span><code>cgc<span class="w"> </span>config<span class="w"> </span>set-db<span class="w"> </span>neo4j
+cgc<span class="w"> </span>config<span class="w"> </span>set-neo4j-uri<span class="w"> </span>bolt://localhost:7687
+</code></pre></div></p>
 <hr />
-<h2 id="2-database-connectivity">2. Database Connectivity</h2>
-<h3 id="no-database-backend-available">"No database backend available"</h3>
-<ul>
-<li><strong>Cause</strong>: No supported database is installed or configured.</li>
-<li><strong>Solution</strong>: Install KùzuDB (recommended): <code>pip install real_ladybug</code>.</li>
+<h2 id="backend-selection-logic">Backend Selection Logic</h2>
+<p>CGC follows a specific priority when deciding which backend to use:</p>
+<ol>
+<li><strong>Explicit</strong>: Any database specified via the <code>--database</code> flag or <code>CGC_RUNTIME_DB_TYPE</code> env var.</li>
+<li><strong>Configured</strong>: The default set via <code>cgc config db</code>.</li>
+<li><strong>Automatic</strong>:<ul>
+<li><strong>Remote FalkorDB</strong>: If <code>FALKORDB_HOST</code> is detected.</li>
+<li><strong>Unix</strong>: Tries FalkorDB Lite → KùzuDB → Neo4j.</li>
+<li><strong>Windows</strong>: Tries KùzuDB → Neo4j.</li>
 </ul>
-<h3 id="neo4j-authentication-failed">Neo4j: "Authentication failed"</h3>
-<ul>
-<li><strong>Cause</strong>: Incorrect credentials in environment variables or <code>.env</code> file.</li>
-<li><strong>Solution</strong>: Verify <code>NEO4J_USERNAME</code> and <code>NEO4J_PASSWORD</code>. Run <code>cgc config list</code> to check current settings.</li>
-</ul>
-<hr />
-<h2 id="3-mcp-integration">3. MCP Integration</h2>
-<h3 id="tools-do-not-appear-in-claudecursor">Tools do not appear in Claude/Cursor</h3>
-<ul>
-<li><strong>Check 1</strong>: Ensure the MCP server is running correctly. Run <code>cgc mcp</code> in your terminal. It should wait for input without exiting immediately.</li>
-<li><strong>Check 2</strong>: Verify the path to the <code>cgc</code> executable in your configuration file. Use absolute paths if necessary.</li>
-<li><strong>Check 3</strong>: Look at the logs. CGC logs to <code>~/.codegraphcontext/logs/mcp.log</code> by default.</li>
-</ul>
-<h3 id="connection-refused-in-mcp">"Connection refused" in MCP</h3>
-<ul>
-<li><strong>Cause</strong>: The database backend is not reachable by the MCP server.</li>
-<li><strong>Solution</strong>: Ensure your database (e.g., Neo4j Docker container) is running before starting the MCP server.</li>
-</ul>
-<hr />
-<h2 id="4-indexing-issues">4. Indexing Issues</h2>
-<h3 id="indexing-is-slow">Indexing is slow</h3>
-<ul>
-<li><strong>Tip</strong>: Use the <code>watch</code> command for incremental updates instead of full re-indexes.</li>
-<li><strong>Tip</strong>: Exclude large, irrelevant directories (like <code>node_modules</code> or <code>dist</code>) using a <code>.cgcignore</code> file.</li>
-</ul>
-<h3 id="tree-sitter-parser-not-found">"Tree-sitter parser not found"</h3>
-<ul>
-<li><strong>Cause</strong>: The parser for a specific language failed to load or is not supported.</li>
-<li><strong>Solution</strong>: Ensure you are using a recent version of <code>codegraphcontext</code>. Run <code>pip install --upgrade codegraphcontext</code>.</li>
-</ul>
-<hr />
-<h2 id="5-diagnostic-command">5. Diagnostic Command</h2>
-<p>If you are still having trouble, run the built-in diagnostic tool:</p>
-<div class="highlight"><pre><span></span><code>cgc<span class="w"> </span>doctor
-</code></pre></div>
-<p>This command checks for:
-*   Python version compatibility.
-*   Installed database backends.
-*   Active configuration settings.
-*   Write permissions for log and data directories.</p>
+</li>
+</ol>
 
 
 
