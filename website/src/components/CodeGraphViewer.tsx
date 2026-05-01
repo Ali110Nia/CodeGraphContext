@@ -1082,7 +1082,16 @@ export default function CodeGraphViewer({ data, onClose }: { data: any, onClose:
     }
 
     setFocusSet({ nodes: pathNodes, links: pathLinks });
-  }, [pathSource, pathTarget, filteredData]);
+
+    // Add extra polish: animate camera to show the path starting from the source node
+    if (fgRef.current && typeof pathSource.x === 'number') {
+      if (graphMode !== 'city3d' && graphMode !== 'graph3d') {
+        // Move camera to source node
+        fgRef.current.centerAt(pathSource.x, pathSource.y, 800);
+        fgRef.current.zoom(2.0, 800);
+      }
+    }
+  }, [pathSource, pathTarget, filteredData, graphMode]);
 
   const getLinkColor = useCallback((link: any) => {
     const isFocused = focusSet ? focusSet.links.has(link) : true;
