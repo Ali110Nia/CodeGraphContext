@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/codegraphcontext-codegraphcontext-badge.png)](https://mseep.ai/app/codegraphcontext-codegraphcontext)
+
 # 🏗️ CodeGraphContext (CGC)
 
 **Turn code repositories into a queryable graph for AI agents.**
