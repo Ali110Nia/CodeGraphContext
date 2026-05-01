@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import asdict
 
-from typing import Any, Dict, Coroutine, Optional, List
+from typing import Any, Dict, Coroutine, Optional, List, Set
 
 from .prompts import LLM_SYSTEM_PROMPT
 from .core import get_database_manager
@@ -75,6 +75,44 @@ def _strip_workspace_prefix(obj):
     return obj
 
 
+# Approximate chars-per-token used for budget conversion.
+# GPT-family tokenizers average ~4 chars/token; using 4 is a safe conservative estimate.
+_CHARS_PER_TOKEN = 4
+
+
+def _apply_response_token_limit(tool_name: str, text: str) -> str:
+    """Truncate *text* to the configured token budget and append a notice.
+
+    Reads ``MAX_TOOL_RESPONSE_TOKENS`` from the CGC config at call time so
+    that live config changes are respected without a server restart.
+    Returns *text* unchanged when the limit is 0 (unlimited) or not set.
+    """
+    from .cli.config_manager import get_config_value
+
+    raw = get_config_value("MAX_TOOL_RESPONSE_TOKENS") or "0"
+    try:
+        max_tokens = int(raw)
+    except ValueError:
+        max_tokens = 0
+
+    if max_tokens <= 0:
+        return text  # unlimited
+
+    max_chars = max_tokens * _CHARS_PER_TOKEN
+    if len(text) <= max_chars:
+        return text
+
+    notice = (
+        f"\n\n[CGC] Response truncated: output exceeded the MAX_TOOL_RESPONSE_TOKENS "
+        f"limit of {max_tokens} tokens (tool: {tool_name}). "
+        "Increase MAX_TOOL_RESPONSE_TOKENS or narrow your query for full results."
+    )
+    # Reserve space for the notice inside the budget
+    budget = max_chars - len(notice)
+    if budget < 0:
+        budget = 0
+    return text[:budget] + notice
+
 
 class MCPServer:
     """
@@ -100,6 +138,7 @@ class MCPServer:
         self.cwd = (cwd or Path.cwd()).resolve()
         self.discovered_child_contexts: List[dict] = []
         self._context_note_pending = False
+        self.disabled_tools: Set[str] = set()
 
         try:
             ctx = resolve_context(cwd=self.cwd)
@@ -146,7 +185,76 @@ class MCPServer:
         """
         Defines the complete tool manifest for the LLM.
         """
-        self.tools = TOOLS
+        self.disabled_tools = self._load_disabled_tools()
+        self.tools = {
+            name: definition
+            for name, definition in TOOLS.items()
+            if name not in self.disabled_tools
+        }
+
+    def _normalize_tool_name(self, name: Any) -> Optional[str]:
+        """Normalize tool names from mcp.json to internal tool identifiers."""
+        if not isinstance(name, str):
+            return None
+
+        normalized = name.strip()
+        if not normalized:
+            return None
+
+        if normalized.startswith("codegraphcontext_"):
+            normalized = normalized[len("codegraphcontext_"):]
+
+        aliases = {
+            "add_code_to_folder": "add_code_to_graph",
+        }
+
+        return aliases.get(normalized, normalized)
+
+    def _load_disabled_tools(self) -> Set[str]:
+        """Load disabled tool names from `<cwd>/mcp.json` config."""
+        mcp_file = self.cwd / "mcp.json"
+        if not mcp_file.exists():
+            return set()
+
+        try:
+            with open(mcp_file, "r", encoding="utf-8") as f:
+                mcp_config = json.load(f)
+        except Exception as exc:
+            warning_logger(f"Failed to read {mcp_file}: {exc}")
+            return set()
+
+        disabled_tools = (
+            mcp_config
+            .get("mcpServers", {})
+            .get("CodeGraphContext", {})
+            .get("tools", {})
+            .get("disabledTools", [])
+        )
+
+        if not isinstance(disabled_tools, list):
+            warning_logger("mcp.json tools.disabledTools must be a list; ignoring invalid value.")
+            return set()
+
+        normalized_disabled: Set[str] = set()
+        unknown_tools: List[str] = []
+
+        for name in disabled_tools:
+            normalized_name = self._normalize_tool_name(name)
+            if not normalized_name:
+                continue
+
+            if normalized_name in TOOLS:
+                normalized_disabled.add(normalized_name)
+            else:
+                unknown_tools.append(str(name))
+
+        if unknown_tools:
+            warning_logger(
+                "Ignoring unknown tools in mcp.json tools.disabledTools: "
+                + ", ".join(sorted(set(unknown_tools)))
+            )
+
+        return normalized_disabled
 
     def _get_version(self) -> str:
         try:
@@ -333,6 +441,9 @@ class MCPServer:
         """
         Routes a tool call from the AI assistant to the appropriate handler function. 
         """
+        if tool_name in self.disabled_tools:
+            return {"error": f"Unknown tool: {tool_name}"}
+
         tool_map: Dict[str, Coroutine] = {
             "add_package_to_graph": self.add_package_to_graph_tool,
             "find_dead_code": self.find_dead_code_tool,
@@ -433,9 +544,11 @@ class MCPServer:
                             "error": {"code": -32000, "message": "Tool execution error", "data": result}
                         }
                     else:
+                        response_text = json.dumps(result, indent=2)
+                        response_text = _apply_response_token_limit(tool_name, response_text)
                         response = {
                             "jsonrpc": "2.0", "id": request_id,
-                            "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+                            "result": {"content": [{"type": "text", "text": response_text}]}
                         }
                 elif method == 'notifications/initialized':
                     # This is a notification, no response needed.
