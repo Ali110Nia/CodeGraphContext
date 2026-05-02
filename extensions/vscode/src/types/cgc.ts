@@ -42,5 +42,7 @@ export interface CalleeEntry {
 export interface ComplexityEntry {
   function_name?: string;
   path?: string;
-  cyclomatic_complexity?: number;
+  cyclomatic_complexity?: number; // stored in some tool responses
+  complexity?: number;            // alias: Python returns 'as complexity'
+  line_number?: number;
 }

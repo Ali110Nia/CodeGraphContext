@@ -2,8 +2,8 @@
   "name": "codegraphcontext-vscode",
   "displayName": "CodeGraphContext",
   "description": "Code graph intelligence in VS Code powered by CGC MCP.",
-  "version": "0.1.1",
-  "publisher": "codegraphcontext",
+  "version": "0.1.0",
+  "publisher": "ShashankShekharSingh",
   "engines": {
     "vscode": "^1.86.0"
   },
@@ -20,8 +20,7 @@
     "onCommand:cgc.showVariableImpact",
     "onView:cgc-repos",
     "onView:cgc-bundles",
-    "onView:cgc-watches",
-    "onView:cgc-cypher"
+    "onView:cgc-control"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -57,6 +56,14 @@
       {
         "command": "cgc.showVariableImpact",
         "title": "CGC: Show Variable Impact Radius"
+      },
+      {
+        "command": "cgc.refreshExtension",
+        "title": "CGC: Refresh / Restart Extension"
+      },
+      {
+        "command": "cgc.visualizeRepo",
+        "title": "CGC: Visualize Entire Repo"
       }
     ],
     "menus": {
@@ -87,20 +94,17 @@
     "views": {
       "cgc-explorer": [
         {
+          "id": "cgc-control",
+          "name": "CGC Control Panel",
+          "type": "webview"
+        },
+        {
           "id": "cgc-repos",
           "name": "Repositories"
         },
         {
           "id": "cgc-bundles",
           "name": "Bundles"
-        },
-        {
-          "id": "cgc-watches",
-          "name": "Live Watches"
-        },
-        {
-          "id": "cgc-cypher",
-          "name": "Cypher Search"
         }
       ]
     },
@@ -151,6 +155,52 @@
           "type": "string",
           "default": "",
           "description": "Optional Neo4j URI for CGC engine transparency."
+        },
+        "cgc.contextMode": {
+          "type": "string",
+          "default": "global",
+          "enum": ["global", "per-repo", "named"],
+          "description": "CGC context mode: global, per-repo, or named workspace."
+        },
+        "cgc.indexVariables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Index variable nodes in the code graph."
+        },
+        "cgc.ignoreDirs": {
+          "type": "string",
+          "default": "node_modules,venv,.venv,dist,build,__pycache__",
+          "description": "Comma-separated directories to exclude from indexing."
+        },
+        "cgc.parallelWorkers": {
+          "type": "number",
+          "default": 4,
+          "description": "Number of parallel indexing workers."
+        },
+        "cgc.enableAutoWatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically watch directory after indexing."
+        },
+        "cgc.maxFileSizeMb": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum file size (MB) to include in indexing."
+        },
+        "cgc.ignoreTestFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip test files during indexing."
+        },
+        "cgc.scipIndexer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use SCIP-based indexing for higher accuracy (requires scip-<lang> tools)."
+        },
+        "cgc.toolResultLimits": {
+          "type": "string",
+          "default": "{}",
+          "description": "JSON map of tool name to max result count, e.g. {\"find_code\": 20}."
         }
       }
     }
