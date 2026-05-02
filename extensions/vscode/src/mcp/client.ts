@@ -133,9 +133,27 @@ export class CgcMcpClient {
   }
 
   private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    await this.ensureProcessReady();
-    if (!this.proc) throw new Error("Process missing");
-    return this.internalRequest(this.proc, method, params);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.ensureProcessReady();
+      if (!this.proc) throw new Error("Process missing");
+      try {
+        return await this.internalRequest(this.proc, method, params);
+      } catch (err) {
+        const msg = String(err);
+        const isChannelError = msg.includes("Channel has been closed") ||
+          msg.includes("stdin is not writable") ||
+          msg.includes("process exited");
+        if (isChannelError && attempt === 0) {
+          this.output.appendLine(`MCP channel error, restarting (${msg})`);
+          this.proc?.kill();
+          this.proc = undefined;
+          await this.ensureStarted();
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error("MCP request failed after retry");
   }
 
   private notify(method: string, params: Record<string, unknown>): void {
@@ -153,7 +171,13 @@ export class CgcMcpClient {
         reject(new Error("CGC MCP stdin is not writable"));
         return;
       }
-      proc.stdin.write(`${payload}\n`);
+      try {
+        proc.stdin.write(`${payload}\n`);
+      } catch (err) {
+        this.pending.delete(id);
+        reject(err);
+        return;
+      }
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);

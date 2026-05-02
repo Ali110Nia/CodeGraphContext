@@ -17,7 +17,7 @@ export function renderDashboardHtml(payload: DashboardPayload): string {
 
   const hotspots = payload.hotspots
     .map((h) => {
-      const score = h.cyclomatic_complexity ?? 0;
+      const score = (h as { complexity?: number }).complexity ?? h.cyclomatic_complexity ?? 0;
       const width = Math.min(100, score * 4);
       return `<div class="risk-row"><span>${escapeHtml(h.function_name ?? "function")}</span><div class="bar"><div style="width:${width}%"></div></div><span>${score}</span></div>`;
     })

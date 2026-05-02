@@ -36,13 +36,9 @@ export class CgcService {
       context: filePath,
       repo_path: this.getRepoPathOverride()
     });
-    if (Array.isArray(res.callers)) {
-      return res.callers;
-    }
-    if (Array.isArray(res.results)) {
-      return res.results;
-    }
-    return res.results?.results ?? [];
+    if (Array.isArray(res.callers)) return res.callers;
+    if (Array.isArray(res.results)) return res.results;
+    return (res.results as { results?: CallerEntry[] })?.results ?? [];
   }
 
   public async findCallees(target: string, filePath?: string): Promise<CalleeEntry[]> {
@@ -52,13 +48,9 @@ export class CgcService {
       context: filePath,
       repo_path: this.getRepoPathOverride()
     });
-    if (Array.isArray(res.callees)) {
-      return res.callees;
-    }
-    if (Array.isArray(res.results)) {
-      return res.results;
-    }
-    return res.results?.results ?? [];
+    if (Array.isArray(res.callees)) return res.callees;
+    if (Array.isArray(res.results)) return res.results;
+    return (res.results as { results?: CalleeEntry[] })?.results ?? [];
   }
 
   public async listRepositories(): Promise<IndexedRepository[]> {
@@ -116,14 +108,87 @@ export class CgcService {
 
   public async getComplexityHotspots(limit = 10): Promise<ComplexityEntry[]> {
     const res = await this.client.callTool<{
+      results?: Array<{ function_name?: string; path?: string; complexity?: number; cyclomatic_complexity?: number; line_number?: number }>;
       functions?: ComplexityEntry[];
       most_complex_functions?: ComplexityEntry[];
-      results?: ComplexityEntry[];
     }>("find_most_complex_functions", {
       limit,
       repo_path: this.getRepoPathOverride()
     });
-    return res.functions ?? res.most_complex_functions ?? res.results ?? [];
+    // Python handler returns { results: [{function_name, path, complexity, line_number}] }
+    // 'complexity' is the alias for cyclomatic_complexity in the Cypher RETURN clause
+    const raw = res.results ?? res.functions ?? res.most_complex_functions ?? [];
+    return raw.map(r => ({
+      function_name: r.function_name,
+      path: r.path,
+      line_number: r.line_number,
+      cyclomatic_complexity: r.cyclomatic_complexity ?? r.complexity,
+      complexity: r.complexity ?? r.cyclomatic_complexity
+    }));
+  }
+
+  public async listFunctions(repoPath?: string): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client.callTool<{
+      functions?: Array<Record<string, unknown>>;
+      results?: Array<Record<string, unknown>>;
+    }>("find_most_complex_functions", { limit: 200, repo_path: repoPath ?? this.getRepoPathOverride() });
+    return res.functions ?? res.results ?? [];
+  }
+
+  public async listClasses(repoPath?: string): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client.callTool<{
+      data?: Array<Record<string, unknown>>;
+      results?: Array<Record<string, unknown>>;
+    }>("execute_cypher_query", {
+      cypher_query: "MATCH (c:Class) RETURN c.name AS name, c.file_path AS path, c.line_number AS line ORDER BY c.name LIMIT 200"
+    });
+    return res.data ?? res.results ?? [];
+  }
+
+  public async listImports(file: string): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client.callTool<{
+      data?: Array<Record<string, unknown>>;
+      results?: Array<Record<string, unknown>>;
+    }>("execute_cypher_query", {
+      cypher_query: `MATCH (f:File {path: '${file.replace(/'/g, "\\'")}'})-->(i:Import) RETURN i.name AS name, i.source AS source LIMIT 100`
+    });
+    return res.data ?? res.results ?? [];
+  }
+
+  public async findCallChain(from: string, to: string, fromFile?: string, toFile?: string): Promise<Array<Record<string, unknown>>> {
+    // The MCP tool expects target in "start->end" format for call_chain queries.
+    // Optionally pass context as "fromFile->toFile" for file-scoped search.
+    const target = `${from}->${to}`;
+    const context = (fromFile || toFile) ? `${fromFile ?? ""}|${toFile ?? ""}` : undefined;
+    const res = await this.client.callTool<{
+      chain?: Array<Record<string, unknown>>;
+      results?: Array<Record<string, unknown>>;
+      data?: Array<Record<string, unknown>>;
+    }>("analyze_code_relationships", {
+      query_type: "call_chain",
+      target,
+      context,
+      repo_path: this.getRepoPathOverride()
+    });
+    return res.chain ?? (Array.isArray(res.results) ? res.results : []) ?? res.data ?? [];
+  }
+
+  public async listCallees(target: string, filePath?: string, depth = 1): Promise<Array<Record<string, unknown>>> {
+    // find_all_callees does transitive resolution; find_callees is single-level
+    const queryType = depth > 1 ? "find_all_callees" : "find_callees";
+    const res = await this.client.callTool<{
+      callees?: Array<Record<string, unknown>>;
+      results?: Array<Record<string, unknown>> | { results?: Array<Record<string, unknown>> };
+    }>("analyze_code_relationships", {
+      query_type: queryType,
+      target,
+      context: filePath,
+      depth,
+      repo_path: this.getRepoPathOverride()
+    });
+    if (Array.isArray(res.callees)) return res.callees;
+    if (Array.isArray(res.results)) return res.results;
+    return (res.results as { results?: Array<Record<string, unknown>> })?.results ?? [];
   }
 
   public async variableImpactRadius(target: string, filePath?: string): Promise<Array<Record<string, unknown>>> {

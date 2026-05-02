@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { CgcMcpClient } from "./mcp/client";
 import { CgcService } from "./mcp/service";
 import { CgcCodeLensProvider, CgcDeadCodeCodeActionProvider, CgcDeadCodeDiagnostics, CgcHoverProvider } from "./providers/editorProviders";
-import { BundlesTreeProvider, CypherViewProvider, ReposTreeProvider, WatchesTreeProvider } from "./views/explorerViews";
+import { BundlesTreeProvider, ReposTreeProvider } from "./views/explorerViews";
+import { SidebarControlPanel } from "./views/controlPanel";
 import { CallGraphPanel } from "./webview/callGraphPanel";
 import { extractDeclarationSignature } from "./testing/parser";
 import { DashboardPanel } from "./webview/dashboardPanel";
@@ -19,14 +20,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const service = new CgcService(client);
   const callGraphPanel = new CallGraphPanel(service);
   const dashboardPanel = new DashboardPanel(service);
+  const sidebarControl = new SidebarControlPanel(service, client, context);
 
   const diagnostics = new CgcDeadCodeDiagnostics(service);
   const codeLensProvider = new CgcCodeLensProvider(service);
   const hoverProvider = new CgcHoverProvider(service);
   const reposProvider = new ReposTreeProvider(service);
   const bundlesProvider = new BundlesTreeProvider(service);
-  const watchesProvider = new WatchesTreeProvider(service);
-  const cypherView = new CypherViewProvider(service);
 
   const previousSignatures = new Map<string, string>();
   const watcher = vscode.workspace.createFileSystemWatcher("**/.codegraphcontext/**");
@@ -39,17 +39,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.window.registerTreeDataProvider("cgc-repos", reposProvider),
     vscode.window.registerTreeDataProvider("cgc-bundles", bundlesProvider),
-    vscode.window.registerTreeDataProvider("cgc-watches", watchesProvider),
-    vscode.window.registerWebviewViewProvider(CypherViewProvider.viewType, cypherView),
+    vscode.window.registerWebviewViewProvider(SidebarControlPanel.viewType, sidebarControl),
     diagnostics,
     watcher
   );
 
   const refreshDiagnostics = async (doc?: vscode.TextDocument): Promise<void> => {
     const target = doc ?? vscode.window.activeTextEditor?.document;
-    if (!target) {
-      return;
-    }
+    if (!target) return;
     try {
       await diagnostics.refreshForDocument(target);
     } catch (err) {
@@ -61,19 +58,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("cgc.openDashboard", () => {
       dashboardPanel.show();
     }),
+    vscode.commands.registerCommand("cgc.visualizeRepo", () => {
+      dashboardPanel.show();
+    }),
     vscode.commands.registerCommand("cgc.showCallGraph", () => {
       const editor = vscode.window.activeTextEditor;
       callGraphPanel.show(context, editor ? extractSymbolAtCursor(editor) : undefined);
     }),
     vscode.commands.registerCommand("cgc.analyzeRelationships", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        return;
-      }
+      if (!editor) return;
       const symbol = extractSymbolAtCursor(editor);
-      if (!symbol) {
-        return;
-      }
+      if (!symbol) return;
       const callers = await service.findCallers(symbol, editor.document.uri.fsPath);
       const selected = await vscode.window.showQuickPick(
         callers.map((c) => ({
@@ -93,9 +89,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("cgc.refreshIndex", async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!workspace) {
-        return;
-      }
+      if (!workspace) return;
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Refreshing CodeGraphContext index..." },
         async () => {
@@ -104,38 +98,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       );
       reposProvider.refresh();
-      watchesProvider.refresh();
+      await sidebarControl.refresh();
       await refreshDiagnostics();
+    }),
+    vscode.commands.registerCommand("cgc.refreshExtension", async () => {
+      client.dispose();
+      await client.ensureStarted();
+      await sidebarControl.refresh();
+      vscode.window.showInformationMessage("CGC extension restarted.");
     }),
     vscode.commands.registerCommand("cgc.runIndexWizard", async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!workspace) {
-        return;
-      }
+      if (!workspace) return;
       const choice = await vscode.window.showQuickPick(["Index only", "Index + Watch"], {
         title: "CodeGraphContext setup"
       });
-      if (!choice) {
-        return;
-      }
+      if (!choice) return;
       await service.indexWorkspace(workspace);
       if (choice === "Index + Watch") {
         await service.watchWorkspace(workspace);
       }
       vscode.window.showInformationMessage("CGC setup complete for this workspace.");
       reposProvider.refresh();
-      watchesProvider.refresh();
-    }),
-    vscode.commands.registerCommand("cgc.openCypherConsole", async () => {
-      await vscode.commands.executeCommand("workbench.view.extension.cgc-explorer");
+      await sidebarControl.refresh();
     }),
     vscode.commands.registerCommand("cgc.openEngineConfig", () => {
       SetupPanel.createOrShow(context, client);
     }),
     vscode.commands.registerCommand("cgc.runCypherQuery", async (query?: string) => {
-      const defaultQuery = query ?? "MATCH (f:Function) RETURN f.name AS name LIMIT 20";
-      cypherView.focusWithQuery(defaultQuery);
-      await vscode.commands.executeCommand("workbench.view.extension.cgc-explorer");
+      // Open dashboard with the query
+      dashboardPanel.show();
     }),
     vscode.commands.registerCommand("cgc.showComplexityAtSymbol", async (uri: vscode.Uri, symbol: string) => {
       const complexity = await service.getComplexity(symbol, uri.fsPath);
@@ -147,13 +139,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("cgc.showVariableImpact", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        return;
-      }
+      if (!editor) return;
       const variable = extractSymbolAtCursor(editor);
-      if (!variable) {
-        return;
-      }
+      if (!variable) return;
       const impacts = await service.variableImpactRadius(variable, editor.document.uri.fsPath);
       const picked = await vscode.window.showQuickPick(
         impacts.slice(0, 50).map((row) => ({
@@ -190,9 +178,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await dashboardPanel.refresh();
     }),
     vscode.window.onDidChangeActiveTextEditor(async (editor) => {
-      if (!editor) {
-        return;
-      }
+      if (!editor) return;
       await refreshDiagnostics(editor.document);
       const symbol = extractSymbolAtCursor(editor);
       if (symbol) {
@@ -208,6 +194,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     watcher.onDidCreate(async () => {
       dashboardPanel.notifyRefresh(".codegraphcontext created");
       await dashboardPanel.refresh();
+      await sidebarControl.refresh();
     }),
     watcher.onDidChange(async () => {
       dashboardPanel.notifyRefresh(".codegraphcontext changed");
