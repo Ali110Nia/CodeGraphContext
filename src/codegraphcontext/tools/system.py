@@ -9,6 +9,7 @@ from neo4j.exceptions import CypherSyntaxError
 from ..core.database import DatabaseManager
 from ..core.jobs import JobManager, JobStatus
 from ..utils.debug_log import debug_log
+from ..utils.security import validate_cypher_read_only
 
 logger = logging.getLogger(__name__)
 
@@ -78,12 +79,9 @@ class SystemTools:
 
     def execute_cypher_query_tool(self, cypher_query: str) -> Dict[str, Any]:
         """Tool to execute a read-only Cypher query."""
-        if not cypher_query:
-            return {"error": "Cypher query cannot be empty."}
-
-        forbidden_keywords = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE', 'DROP', 'CALL apoc']
-        if any(keyword in cypher_query.upper() for keyword in forbidden_keywords):
-            return {"error": "This tool only supports read-only queries."}
+        validation_error = validate_cypher_read_only(cypher_query)
+        if validation_error:
+            return validation_error
 
         try:
             with self.db_manager.get_driver().session() as session:
