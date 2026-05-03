@@ -1,6 +1,6 @@
 # CodeGraphContext (CGC) — Complete Architecture Document
 
-> **Version:** 0.4.5  
+> **Version:** 0.4.6  
 > **Generated:** 2026-04-09  
 > **Scope:** Every module, connection, data flow, limitation, and feature across the entire codebase.
 
@@ -303,7 +303,7 @@ stateDiagram-v2
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 
 // ← Server responds (stdout):
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"CodeGraphContext","version":"0.4.5"},"capabilities":{"tools":{"listTools":true}}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"CodeGraphContext","version":"0.4.6"},"capabilities":{"tools":{"listTools":true}}}}
 
 // → Client sends:
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_code","arguments":{"query":"authenticate"}}}
@@ -1198,7 +1198,7 @@ flowchart TD
 
 ```
 CodeGraphContext/
-├── pyproject.toml                    # Package metadata, deps, scripts (v0.4.5)
+├── pyproject.toml                    # Package metadata, deps, scripts (v0.4.6)
 ├── requirements.txt                  # Minimal deps (pathspec only)
 ├── MANIFEST.in                       # Include viz/dist in sdist
 ├── Dockerfile                        # Container image
