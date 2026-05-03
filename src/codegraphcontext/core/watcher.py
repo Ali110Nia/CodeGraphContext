@@ -42,6 +42,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
         # Caches for the repository's state.
         self.all_file_data = []
         self.imports_map = {}
+        self.file_to_symbols = {} # Map of file path -> list of symbols it defines.
         
         # Perform the initial scan and linking when the watcher is created.
         if perform_initial_scan:
@@ -55,6 +56,14 @@ class RepositoryEventHandler(FileSystemEventHandler):
         
         # 1. Pre-scan all files to get a global map of where every symbol is defined.
         self.imports_map = self.graph_builder._pre_scan_for_imports(all_files)
+
+        # 1b. Build the reverse mapping: file_path -> list of symbols it defines.
+        # self.file_to_symbols is already initialized in __init__
+        for symbol, paths in self.imports_map.items():
+            for p in paths:
+                if p not in self.file_to_symbols:
+                    self.file_to_symbols[p] = []
+                self.file_to_symbols[p].append(symbol)
         
         # 2. Parse all files in detail and cache the parsed data.
         for f in all_files:
@@ -89,21 +98,30 @@ class RepositoryEventHandler(FileSystemEventHandler):
         symbols don't leave dangling entries."""
         changed_str = str(changed_path.resolve())
         # Remove old contributions of this file from every symbol it previously exported.
-        for symbol in list(self.imports_map.keys()):
-            old_list = self.imports_map[symbol]
-            if changed_str in old_list:
+        # Uses self.file_to_symbols for efficient removal (O(k) where k is symbols in file,
+        # instead of O(N) where N is all symbols in the repo).
+        old_symbols = self.file_to_symbols.pop(changed_str, [])
+        for symbol in old_symbols:
+            if symbol in self.imports_map:
+                old_list = self.imports_map[symbol]
                 new_list = [p for p in old_list if p != changed_str]
                 if new_list:
                     self.imports_map[symbol] = new_list
                 else:
                     del self.imports_map[symbol]
+
         # Merge new contributions (if the file still exists).
         if changed_path.exists():
             new_map = self.graph_builder._pre_scan_for_imports([changed_path])
+            new_symbols = []
             for symbol, paths in new_map.items():
                 if symbol not in self.imports_map:
                     self.imports_map[symbol] = []
                 self.imports_map[symbol].extend(paths)
+                new_symbols.append(symbol)
+
+            if new_symbols:
+                self.file_to_symbols[changed_str] = new_symbols
 
     def _handle_modification(self, event_path_str: str):
         """
@@ -204,15 +222,14 @@ class CodeWatcher:
     def __init__(self, graph_builder: "GraphBuilder", job_manager= "JobManager"):
         self.graph_builder = graph_builder
         self.observer = Observer()
-        self.watched_paths = set() # Keep track of paths already being watched.
-        self.watches = {} # Store watch objects to allow unscheduling
+        self.watches = {} # Store watch objects to allow unscheduling and track watched paths
 
     def watch_directory(self, path: str, perform_initial_scan: bool = True):
         """Schedules a directory to be watched for changes."""
         path_obj = Path(path).resolve()
         path_str = str(path_obj)
 
-        if path_str in self.watched_paths:
+        if path_str in self.watches:
             info_logger(f"Path already being watched: {path_str}")
             return {"message": f"Path already being watched: {path_str}"}
         
@@ -221,7 +238,6 @@ class CodeWatcher:
         
         watch = self.observer.schedule(event_handler, path_str, recursive=True)
         self.watches[path_str] = watch
-        self.watched_paths.add(path_str)
         info_logger(f"Started watching for code changes in: {path_str}")
         
         return {"message": f"Started watching {path_str}."}
@@ -230,7 +246,7 @@ class CodeWatcher:
         path_obj = Path(path).resolve()
         path_str = str(path_obj)
 
-        if path_str not in self.watched_paths:
+        if path_str not in self.watches:
             warning_logger(f"Attempted to unwatch a path that is not being watched: {path_str}")
             return {"error": f"Path not currently being watched: {path_str}"}
 
@@ -238,13 +254,12 @@ class CodeWatcher:
         if watch:
             self.observer.unschedule(watch)
         
-        self.watched_paths.discard(path_str)
         info_logger(f"Stopped watching for code changes in: {path_str}")
         return {"message": f"Stopped watching {path_str}."}
 
     def list_watched_paths(self) -> list:
         """Returns a list of all currently watched directory paths."""
-        return list(self.watched_paths)
+        return list(self.watches.keys())
 
     def start(self):
         """Starts the observer thread."""
