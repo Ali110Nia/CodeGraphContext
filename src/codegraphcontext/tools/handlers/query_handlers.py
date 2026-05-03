@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict
 from neo4j.exceptions import CypherSyntaxError
 from ...utils.debug_log import debug_log
+from ...utils.security import validate_cypher_read_only
 
 def execute_cypher_query(db_manager, **args) -> Dict[str, Any]:
     """
@@ -16,25 +17,9 @@ def execute_cypher_query(db_manager, **args) -> Dict[str, Any]:
     by disallowing keywords like CREATE, MERGE, DELETE, etc.
     """
     cypher_query = args.get("cypher_query")
-    if not cypher_query:
-        return {"error": "Cypher query cannot be empty."}
-
-    # Safety Check: Prevent any write operations to the database.
-    # This check first removes all string literals and then checks for forbidden keywords.
-    forbidden_keywords = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE', 'DROP', 'CALL apoc']
-    
-    # Regex to match single or double quoted strings, handling escaped quotes.
-    string_literal_pattern = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
-    
-    # Remove all string literals from the query.
-    query_without_strings = re.sub(string_literal_pattern, '', cypher_query)
-    
-    # Now, check for forbidden keywords in the query without strings.
-    for keyword in forbidden_keywords:
-        if re.search(r'\b' + keyword + r'\b', query_without_strings, re.IGNORECASE):
-            return {
-                "error": "This tool only supports read-only queries. Prohibited keywords like CREATE, MERGE, DELETE, SET, etc., are not allowed."
-            }
+    validation_error = validate_cypher_read_only(cypher_query)
+    if validation_error:
+        return validation_error
 
     try:
         debug_log(f"Executing Cypher query: {cypher_query}")
