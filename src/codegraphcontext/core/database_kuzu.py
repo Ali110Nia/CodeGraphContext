@@ -35,6 +35,18 @@ class KuzuDBManager:
         """
         Initializes the manager with default database path or explicit overrides.
         """
+        if (
+            hasattr(self, '_initialized')
+            and self.db_path == db_path
+            and (
+                read_only is None
+                or getattr(self, "read_only", False) == bool(read_only)
+            )
+        ):
+            return
+
+        self._initialized = False
+
         self.name = "kuzudb"
         # Try to load from config manager
         try:
@@ -43,34 +55,16 @@ class KuzuDBManager:
         except Exception:
             config_db_path = None
 
-        requested_db_path = db_path or os.getenv(
+        # Database path with fallback chain (Explicit > Env > Config/Default)
+        self.db_path = db_path or os.getenv(
             'KUZUDB_PATH',
             config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / 'kuzudb')
         )
         # Allow explicit parameter override first, then env fallback.
         if read_only is None:
-            requested_read_only = os.getenv("CGC_KUZU_READ_ONLY", "false").lower() == "true"
+            self.read_only = os.getenv("CGC_KUZU_READ_ONLY", "false").lower() == "true"
         else:
-            requested_read_only = bool(read_only)
-
-        if hasattr(self, "_initialized"):
-            same_path = getattr(self, "db_path", None) == requested_db_path
-            same_read_only = getattr(self, "read_only", False) == requested_read_only
-            if same_path and same_read_only:
-                return
-
-            # Important for context switching: this singleton can be reused with a
-            # different db_path, so stale open connections must be dropped.
-            if self._conn is not None:
-                info_logger(
-                    "KùzuDB manager reconfigured (path/read_only changed); resetting existing connection."
-                )
-                self._conn = None
-                self._db = None
-
-        self._initialized = False
-        self.db_path = requested_db_path
-        self.read_only = requested_read_only
+            self.read_only = bool(read_only)
         
         # Ensure directory exists
         os.makedirs(Path(self.db_path).parent, exist_ok=True)
@@ -86,7 +80,6 @@ class KuzuDBManager:
                 if self._conn is None:
                     import kuzu
                     max_retries = 5
-                    attempted_readonly_bootstrap = False
                     for attempt in range(max_retries):
                         try:
                             info_logger(f"Initializing KùzuDB at {self.db_path}")
@@ -102,35 +95,6 @@ class KuzuDBManager:
                             error_logger("KùzuDB is not installed. Run 'pip install kuzu'")
                             raise ValueError("KùzuDB missing.")
                         except Exception as e:
-                            err = str(e).lower()
-                            if (
-                                self.read_only
-                                and not attempted_readonly_bootstrap
-                                and "empty database" in err
-                                and "read only" in err
-                            ):
-                                warning_logger(
-                                    "KùzuDB read-only startup detected an empty database. "
-                                    "Bootstrapping schema once in read-write mode, then reopening read-only."
-                                )
-                                attempted_readonly_bootstrap = True
-                                try:
-                                    bootstrap_db = kuzu.Database(self.db_path, read_only=False)
-                                    bootstrap_conn = kuzu.Connection(bootstrap_db)
-                                    old_db, old_conn = self._db, self._conn
-                                    self._db, self._conn = bootstrap_db, bootstrap_conn
-                                    self._initialize_schema()
-                                    self._conn = None
-                                    self._db = None
-                                    # Retry opening in read-only mode on next loop iteration.
-                                    continue
-                                except Exception as bootstrap_error:
-                                    self._conn = None
-                                    self._db = None
-                                    error_logger(
-                                        f"Failed to bootstrap empty KùzuDB for read-only mode: {bootstrap_error}"
-                                    )
-                                    raise
                             if "lock" in str(e).lower() and attempt < max_retries - 1:
                                 wait = 0.5 * (2 ** attempt)
                                 warning_logger(f"KùzuDB lock contention, retrying in {wait:.1f}s ({attempt+1}/{max_retries})...")

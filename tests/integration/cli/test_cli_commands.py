@@ -212,6 +212,7 @@ class _FakeCodeFinder:
 def kuzudb_env():
     env = {
         "DEFAULT_DATABASE": "kuzudb",
+        "DATABASE_TYPE": "kuzudb",
         "CGC_RUNTIME_DB_TYPE": "kuzudb",
     }
     with patch.dict(os.environ, env, clear=False):
@@ -495,8 +496,9 @@ class TestNeo4jDatabaseNameCLI:
             "bolt://localhost:7687", "neo4j", "password", database="mydb"
         )
 
+    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_displays_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
+    def test_load_credentials_displays_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
         """Test _load_credentials prints database name when NEO4J_DATABASE is set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -512,6 +514,7 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
+                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -528,8 +531,9 @@ class TestNeo4jDatabaseNameCLI:
             printed = output.getvalue()
             assert "Using database: Neo4j (database: mydb)" in printed
 
+    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_no_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
+    def test_load_credentials_no_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
         """Test _load_credentials prints Neo4j without database when NEO4J_DATABASE is not set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -544,6 +548,7 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
+                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -563,6 +568,7 @@ class TestNeo4jDatabaseNameCLI:
 
 
 def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main, "find_dotenv", lambda **_kwargs: None)
     monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda *_args, **_kwargs: None)
 
     monkeypatch.chdir(tmp_path)
@@ -570,6 +576,7 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
         k: v for k, v in os.environ.items()
         if k not in {
             "DEFAULT_DATABASE",
+            "DATABASE_TYPE",
             "CGC_RUNTIME_DB_TYPE",
             "NEO4J_URI",
             "NEO4J_USERNAME",
@@ -613,11 +620,6 @@ def test_mcp_start_defaults_to_readonly(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "acquire_mcp_lock", _fake_lock)
     monkeypatch.setattr(cli_main, "MCPServer", _FakeMCPServer)
-    monkeypatch.setattr(
-        cli_main,
-        "run_startup_health_gate",
-        lambda **_kwargs: {"ok": True, "canary_results": []},
-    )
 
     closed_fds = []
     monkeypatch.setattr(cli_main.os, "close", lambda fd: closed_fds.append(fd))
@@ -629,33 +631,6 @@ def test_mcp_start_defaults_to_readonly(monkeypatch, tmp_path):
     assert captured["server_read_only_mode"] is True
     assert captured["server_db_read_only"] is True
     assert 99 in closed_fds
-
-
-def test_mcp_start_fails_on_startup_health_gate(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        cli_main,
-        "resolve_context",
-        lambda **_kwargs: types.SimpleNamespace(database="kuzudb", db_path=str(tmp_path / "db" / "kuzudb")),
-    )
-    monkeypatch.setattr(cli_main, "acquire_mcp_lock", lambda *_args, **_kwargs: 77)
-    monkeypatch.setattr(
-        cli_main,
-        "run_startup_health_gate",
-        lambda **_kwargs: {
-            "ok": False,
-            "error_code": "MCP_STARTUP_HEALTH_GATE_FAILED",
-            "action_hint": "MCP_DISABLED_USE_NON_MCP_FALLBACK",
-            "canary_results": [{"name": "list_indexed_repositories", "ok": False}],
-        },
-    )
-    monkeypatch.setattr(cli_main, "startup_strict_mode_enabled", lambda: True)
-
-    result = runner.invoke(app, ["mcp", "start"])
-
-    assert result.exit_code == 1
-    assert "MCP startup health gate failed" in result.output
-    assert "MCP_STARTUP_HEALTH_GATE_FAILED" in result.output
 
 
 def test_index_fails_fast_on_write_lock_contention(monkeypatch, tmp_path):
