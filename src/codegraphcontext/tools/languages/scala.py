@@ -455,29 +455,125 @@ class ScalaTreeSitterParser:
     
 
     def _extract_parameter_names(self, params_text: str) -> List[str]:
-        # Simple extraction for Scala: (a: Int, b: String)
+        """
+        Extracts parameter names from a Scala parameter list string.
+        Handles nested generics like List[String], function types, string literals, and backticks.
+        """
         params = []
         if not params_text: return params
-        clean = params_text.strip("()")
-        if not clean: return params
         
-        # Split by comma, respecting generics []
-        # Scala generics use []
+        clean = params_text.strip()
+        if clean.startswith('(') and clean.endswith(')'):
+            clean = clean[1:-1]
         
-        # TODO: Reuse regex/parsing logic from other parsers or write simple one
-        # For now, simplistic split
-        parts = clean.split(',')
-        for p in parts:
-            # removing type: 'name: Type'
-            if ':' in p:
-                name = p.split(':')[0].strip()
-                # Remove modifiers like 'implicit', 'override', etc.
-                tokens = name.split()
-                if tokens:
-                    params.append(tokens[-1])
+        if not clean.strip(): return params
+
+        def split_with_depth(text, split_char):
+            parts = []
+            current = []
+            d_r, d_s, d_c = 0, 0, 0
+            in_string = None
+            in_backtick = False
+            escaped = False
+
+            for char in text:
+                if escaped:
+                    current.append(char)
+                    escaped = False
+                    continue
+                if char == '\\' and in_string:
+                    escaped = True
+                    current.append(char)
+                    continue
+                if char == '`' and not in_string:
+                    in_backtick = not in_backtick
+                elif char in ('"', "'") and not in_backtick:
+                    if in_string == char: in_string = None
+                    elif in_string is None: in_string = char
+
+                if not in_string and not in_backtick:
+                    if char == '(': d_r += 1
+                    elif char == ')': d_r -= 1
+                    elif char == '[': d_s += 1
+                    elif char == ']': d_s -= 1
+                    elif char == '{': d_c += 1
+                    elif char == '}': d_c -= 1
+
+                    if char == split_char and d_r == 0 and d_s == 0 and d_c == 0:
+                        parts.append("".join(current).strip())
+                        current = []
+                        continue
+
+                current.append(char)
+
+            if current:
+                parts.append("".join(current).strip())
+            return parts
+
+        raw_params = split_with_depth(clean, ',')
+
+        for p in raw_params:
+            if not p: continue
+
+            # Find the FIRST colon at depth 0, ignoring strings/backticks
+            colon_index = -1
+            d_r, d_s, d_c = 0, 0, 0
+            in_string = None
+            in_backtick = False
+            escaped = False
+            for i, char in enumerate(p):
+                if escaped:
+                    escaped = False
+                    continue
+                if char == '\\' and in_string:
+                    escaped = True
+                    continue
+                if char == '`' and not in_string:
+                    in_backtick = not in_backtick
+                elif char in ('"', "'") and not in_backtick:
+                    if in_string == char: in_string = None
+                    elif in_string is None: in_string = char
+
+                if not in_string and not in_backtick:
+                    if char == '(': d_r += 1
+                    elif char == ')': d_r -= 1
+                    elif char == '[': d_s += 1
+                    elif char == ']': d_s -= 1
+                    elif char == '{': d_c += 1
+                    elif char == '}': d_c -= 1
+                    elif char == ':' and d_r == 0 and d_s == 0 and d_c == 0:
+                        colon_index = i
+                        break
+
+            if colon_index != -1:
+                lhs = p[:colon_index].strip()
             else:
-                 # maybe just name?
-                 params.append(p.strip())
+                # Fallback for default values if no colon
+                lhs = split_with_depth(p, '=')[0].strip()
+
+            if not lhs: continue
+
+            # Smart split for lhs to respect backticks
+            lhs_tokens = []
+            current_token = []
+            in_backtick = False
+            for char in lhs:
+                if char == '`':
+                    in_backtick = not in_backtick
+                    current_token.append(char)
+                elif char.isspace() and not in_backtick:
+                    if current_token:
+                        lhs_tokens.append("".join(current_token))
+                        current_token = []
+                else:
+                    current_token.append(char)
+            if current_token:
+                lhs_tokens.append("".join(current_token))
+
+            if lhs_tokens:
+                # The name is the last token
+                params.append(lhs_tokens[-1])
+
         return params
 
 
