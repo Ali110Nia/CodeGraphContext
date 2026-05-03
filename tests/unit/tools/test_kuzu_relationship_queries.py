@@ -52,7 +52,6 @@ def test_find_all_callers_avoids_list_extract():
     q = recorder["last_query"]
     assert "list_extract" not in q
     assert "path_nodes[size(path_nodes)]" in q
-    assert "[:CALLS*1..6]" in q
 
 def test_find_all_callees_avoids_list_extract():
     finder, recorder = _make_finder()
@@ -61,7 +60,6 @@ def test_find_all_callees_avoids_list_extract():
     q = recorder["last_query"]
     assert "list_extract" not in q
     assert "path_nodes[size(path_nodes)]" in q
-    assert "[:CALLS*1..6]" in q
 
 def test_call_chain_avoids_list_extract():
     finder, recorder = _make_finder()

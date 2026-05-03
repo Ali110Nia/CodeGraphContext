@@ -115,4 +115,4 @@ def build_ignore_spec(
         )
 
     all_patterns = merged_user_patterns + list(default_patterns)
-    return PathSpec.from_lines("gitignore", all_patterns), local_cgcignore_path
+    return PathSpec.from_lines("gitwildmatch", all_patterns), local_cgcignore_path

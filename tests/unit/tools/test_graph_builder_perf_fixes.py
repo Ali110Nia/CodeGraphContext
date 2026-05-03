@@ -3,7 +3,7 @@ Unit tests for performance and correctness fixes in graph_builder.py and watcher
 
 Covers Changes 2-11:
   - _resolve_function_call (V3 helper)
-  - link_function_calls (V3 UNWIND batching, label categorisation, skip_external)
+  - _create_all_function_calls (V3 UNWIND batching, label categorisation, skip_external)
   - add_file_to_graph (UNWIND batched writes, new repo_path_str param)
   - delete_repository_from_graph (batched, rels-first, orphan purge)
   - delete_relationship_links / delete_outgoing_calls_from_files / delete_inherits_for_files
@@ -68,13 +68,11 @@ class _FakeDriver:
 def _make_graph_builder(session: Optional[_RecordingSession] = None):
     """Return a GraphBuilder with a fake driver. Skips full __init__ setup."""
     from codegraphcontext.tools.graph_builder import GraphBuilder
-    from codegraphcontext.tools.indexing.persistence.writer import GraphWriter
 
     gb = GraphBuilder.__new__(GraphBuilder)
     if session is None:
         session = _RecordingSession()
     gb.driver = _FakeDriver(session)
-    gb._writer = GraphWriter(gb.driver)
     gb.parsers = {}
     return gb, session
 
@@ -185,19 +183,19 @@ class TestResolveFunctionCall:
 
 
 # ---------------------------------------------------------------------------
-# 2. link_function_calls  (V3 UNWIND batching)
+# 2. _create_all_function_calls  (V3 UNWIND batching)
 # ---------------------------------------------------------------------------
 
 class TestCreateAllFunctionCallsV3:
-    """Tests for the V3 link_function_calls method (Change 2)."""
+    """Tests for the V3 _create_all_function_calls method (Change 2)."""
 
     def _run(self, all_file_data, imports_map=None, file_class_lookup=None,
              skip_external_env="false"):
         session = _RecordingSession()
         gb, _ = _make_graph_builder(session)
-        with patch("codegraphcontext.tools.indexing.resolution.calls.get_config_value",
+        with patch("codegraphcontext.tools.graph_builder.get_config_value",
                    return_value=skip_external_env):
-            gb.link_function_calls(
+            gb._create_all_function_calls(
                 all_file_data,
                 imports_map or {},
                 file_class_lookup,
@@ -261,9 +259,9 @@ class TestCreateAllFunctionCallsV3:
         external_lookup = {"/repo/other.py": {"OtherClass"}}
         session = _RecordingSession()
         gb, _ = _make_graph_builder(session)
-        with patch("codegraphcontext.tools.indexing.resolution.calls.get_config_value",
+        with patch("codegraphcontext.tools.graph_builder.get_config_value",
                    return_value="false"):
-            gb.link_function_calls(file_data, {}, external_lookup)
+            gb._create_all_function_calls(file_data, {}, external_lookup)
         resolved_b = str(Path("/repo/b.py").resolve())
         assert resolved_b in external_lookup
         assert "MyClass" in external_lookup[resolved_b]
@@ -456,9 +454,9 @@ class TestGraphBuilderMethodsExist:
         from codegraphcontext.tools.graph_builder import GraphBuilder
         assert callable(getattr(GraphBuilder, "_resolve_function_call", None))
 
-    def test_link_function_calls_exists(self):
+    def test_create_all_function_calls_exists(self):
         from codegraphcontext.tools.graph_builder import GraphBuilder
-        assert callable(getattr(GraphBuilder, "link_function_calls", None))
+        assert callable(getattr(GraphBuilder, "_create_all_function_calls", None))
 
     def test_delete_outgoing_calls_from_files_exists(self):
         from codegraphcontext.tools.graph_builder import GraphBuilder
@@ -530,9 +528,9 @@ class TestWatcherMemoryClear:
 
         mock_gb = MagicMock()
         mock_gb.parsers = {}
-        mock_gb.pre_scan_imports.return_value = {}
-        mock_gb.link_function_calls.return_value = None
-        mock_gb.link_inheritance.return_value = None
+        mock_gb._pre_scan_for_imports.return_value = {}
+        mock_gb._create_all_function_calls.return_value = None
+        mock_gb._create_all_inheritance_links.return_value = None
         watcher.graph_builder = mock_gb
 
         # Patch rglob to return empty list (no files to scan)
@@ -564,8 +562,8 @@ class TestWatcherIncrementalHandleModification:
         mock_gb.get_caller_file_paths.return_value = {"/fake/caller.py"}
         mock_gb.get_inheritance_neighbor_paths.return_value = set()
         mock_gb.get_repo_class_lookup.return_value = {}
-        mock_gb.link_function_calls.return_value = None
-        mock_gb.link_inheritance.return_value = None
+        mock_gb._create_all_function_calls.return_value = None
+        mock_gb._create_all_inheritance_links.return_value = None
         mock_gb.update_file_in_graph.return_value = None
         watcher.graph_builder = mock_gb
 
@@ -588,8 +586,8 @@ class TestWatcherIncrementalHandleModification:
         mock_gb.get_caller_file_paths.return_value = set()
         mock_gb.get_inheritance_neighbor_paths.return_value = set()
         mock_gb.get_repo_class_lookup.return_value = {}
-        mock_gb.link_function_calls.return_value = None
-        mock_gb.link_inheritance.return_value = None
+        mock_gb._create_all_function_calls.return_value = None
+        mock_gb._create_all_inheritance_links.return_value = None
         mock_gb.update_file_in_graph.return_value = None
         watcher.graph_builder = mock_gb
 
@@ -598,8 +596,8 @@ class TestWatcherIncrementalHandleModification:
 
         mock_gb.delete_outgoing_calls_from_files.assert_not_called()
 
-    def test_handle_modification_calls_link_function_calls(self):
-        """After relinking, link_function_calls must be called for the subset."""
+    def test_handle_modification_calls_create_all_function_calls(self):
+        """After relinking, _create_all_function_calls must be called for the subset."""
         from codegraphcontext.core.watcher import RepositoryEventHandler
 
         watcher = RepositoryEventHandler.__new__(RepositoryEventHandler)
@@ -612,15 +610,15 @@ class TestWatcherIncrementalHandleModification:
         mock_gb.get_caller_file_paths.return_value = set()
         mock_gb.get_inheritance_neighbor_paths.return_value = set()
         mock_gb.get_repo_class_lookup.return_value = {}
-        mock_gb.link_function_calls.return_value = None
-        mock_gb.link_inheritance.return_value = None
+        mock_gb._create_all_function_calls.return_value = None
+        mock_gb._create_all_inheritance_links.return_value = None
         mock_gb.update_file_in_graph.return_value = None
         watcher.graph_builder = mock_gb
 
         with patch.object(watcher, "_update_imports_map_for_file"):
             watcher._handle_modification("/fake/module.py")
 
-        mock_gb.link_function_calls.assert_called_once()
+        mock_gb._create_all_function_calls.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +658,7 @@ class TestPreScanDispatchRegression:
         gb._parsed_cache = {}
         gb.get_parser = lambda _ext: object()
 
-        imports_map = gb.pre_scan_imports([c_file, java_file])
+        imports_map = gb._pre_scan_for_imports([c_file, java_file])
 
         assert calls["c"] == 1
         assert calls["java"] == 1

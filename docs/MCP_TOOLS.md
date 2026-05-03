@@ -1,50 +1,80 @@
-# MCP Tools Reference
+# MCP Tools Reference (Query-Only)
 
-This document describes the Model Context Protocol (MCP) tools currently exposed by CodeGraphContext.
+CodeGraphContext MCP is intentionally **read/query-only**.
+All graph mutation workflows (indexing, deleting, bundle import/load, watch setup) are **CLI terminal commands only**.
 
-CodeGraphContext MCP is query-focused in this branch: index/build/write operations are executed from terminal CLI commands, while MCP serves read/query tools.
+## Available MCP Tools
 
-## Tool catalog (14 tools)
+### `find_code`
+Find code snippets related to a keyword.
+- Args: `query` (string), `fuzzy_search` (boolean), `edit_distance` (number), `repo_path` (optional)
+- Returns: Name/content matches, ranked results
 
-The server registers tool definitions from `src/codegraphcontext/tool_definitions.py`.
+### `analyze_code_relationships`
+Analyze relationships between code elements.
+- Args:
+  - `query_type` (enum): `find_callers`, `find_callees`, `find_all_callers`, `find_all_callees`, `find_importers`, `who_modifies`, `class_hierarchy`, `overrides`, `dead_code`, `call_chain`, `module_deps`, `variable_scope`, `find_complexity`, `find_functions_by_argument`, `find_functions_by_decorator`
+  - `target` (string)
+  - `context` (optional string)
+  - `repo_path` (optional string)
+- Returns: Relationship analysis results and summary
 
-### Context management
+### `find_dead_code`
+Find potentially unused functions.
+- Args: `exclude_decorated_with` (optional string array), `repo_path` (optional)
+- Returns: Potentially unused function list
 
-- `discover_codegraph_contexts`: Scan child directories for `.codegraphcontext` folders with indexed DBs.
-- `switch_context`: Switch the MCP session to another context DB.
+### `calculate_cyclomatic_complexity`
+Get complexity of a specific function.
+- Args: `function_name` (string), `path` (optional), `repo_path` (optional)
+- Returns: Function complexity details
 
-### Analysis and search
+### `find_most_complex_functions`
+Get top complex functions.
+- Args: `limit` (integer, optional), `repo_path` (optional)
+- Returns: Functions sorted by complexity
 
-- `find_code`: Keyword/fuzzy code search.
-- `analyze_code_relationships`: Callers/callees/imports/hierarchy/dead-code style relationship queries.
-- `find_dead_code`: Find potentially unused functions.
-- `calculate_cyclomatic_complexity`: Complexity for one function.
-- `find_most_complex_functions`: Rank functions by complexity.
+### `list_indexed_repositories`
+List currently indexed repositories.
+- Args: none
+- Returns: Repository list with path metadata
 
-### Repository and stats
+### `get_repository_stats`
+Get repository statistics.
+- Args: `repo_path` (optional)
+- Returns: Counts for repositories/files/functions/classes/modules
 
-- `list_indexed_repositories`: List indexed repositories.
-- `get_repository_stats`: Aggregate stats for one repo or overall DB.
+### `check_job_status`
+Check status of a background job.
+- Args: `job_id` (string)
+- Returns: Job state and progress
 
-### Jobs
+### `list_jobs`
+List tracked jobs.
+- Args: none
+- Returns: Job list with status metadata
 
-- `list_jobs`: List background jobs.
-- `check_job_status`: Inspect a specific job.
+### `search_registry_bundles`
+Search the bundle registry.
+- Args: `query` (optional), `unique_only` (optional boolean)
+- Returns: Bundle registry matches
 
-### Advanced query and registry
+### `execute_cypher_query`
+Run a direct **read-only** Cypher query.
+- Args: `cypher_query` (string)
+- Returns: Raw query results
 
-- `execute_cypher_query`: Read-only Cypher query execution.
-- `visualize_graph_query`: Visualization URL for graph queries.
-- `search_registry_bundles`: Search bundle registry metadata.
+### `visualize_graph_query`
+Generate a URL to visualize a Cypher query result.
+- Args: `cypher_query` (string)
+- Returns: Visualization URL
 
-## Read-only MCP + Build/Promote workflow
+---
 
-For production-style operation, use MCP in read-only mode and run indexing/writes in a separate build context:
+## Not Available in MCP (CLI-only)
 
-- MCP server: `cgc mcp start --readonly --context mcp-read --global-context`
-- Build/index in terminal: `cgc index /path/to/repo --context mcp-build`
-- Promote DB snapshot: `cgc context promote-db --from-context mcp-build --to-context mcp-read`
-
-Detailed workflow:
-- `docs/docs/guides/mcp_readonly_multi_workspace.md`
-- `docs/mcp_readonly_multi_workspace.md` (repository-level note)
+Use terminal commands for these workflows:
+- Code indexing (`cgc index`, `cgc add-package`)
+- Repository deletion (`cgc delete`)
+- Bundle import/load (`cgc bundle import`, `cgc bundle load`)
+- File watcher workflows (`cgc watch`, `cgc watch-service-*`)

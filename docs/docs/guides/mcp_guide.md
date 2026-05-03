@@ -1,57 +1,49 @@
 # Using with AI (MCP Guide)
 
-The Model Context Protocol (MCP) allows AI assistants to query CodeGraphContext directly.
+The Model Context Protocol (MCP) allows AI coding assistants to talk directly to tools like CodeGraphContext.
 
-## 1. Run the MCP setup wizard
+## 1. Run the MCP Setup Wizard
+
+We provide an interactive tool to configure your editors automatically.
 
 ```bash
 cgc mcp setup
 ```
 
-The wizard writes client MCP config and server command/env wiring.
+**What happens here:**
 
-## 2. Start MCP server
+1.  The tool looks for configuration files (e.g., `~/Library/Application Support/Cursor/User/globalStorage/mcp.json`).
+2.  It injects the `CodeGraphContext` server details.
+3.  It ensures the server knows how to find your database.
 
-Recommended command:
-
-```bash
-cgc mcp start --readonly --global-context --context mcp-read
-```
-
-For long-running usage, you can install a user service:
-
-```bash
-cgc mcp-service-install --context mcp-read --unit-name cgc-mcp-read.service
-cgc mcp-service-status cgc-mcp-read.service
-```
-
-## 3. Supported clients
+## 2. Supported Clients
 
 | Client | Setup Method | Notes |
 | :--- | :--- | :--- |
-| Cursor | Automatic | MCP feature enabled in client settings. |
-| Claude Desktop | Automatic | Standard stdio MCP config. |
-| VS Code | Semi-automatic | Use an MCP-capable extension/client. |
-| OpenCode | Manual | Configure stdio MCP server (`cgc mcp start ...`) with matching env. |
+| **Cursor** | Automatic | Requires "MCP" feature enabled in settings. |
+| **Claude Desktop** | Automatic | Works with the Claude 3.5 Sonnet model. |
+| **VS Code** | Semi-Automatic | Requires the **"Continue"** extension or similar MCP client. |
 
-## 4. Query workflow vs write workflow
+## 3. How to Use It (Once Connected)
 
-In this branch, MCP is query-focused. Use terminal CLI for writes/indexing:
+Open your AI Chat and talk naturally. The AI now has a "tool" it can call.
 
-- Query via MCP tools: `find_code`, `analyze_code_relationships`, `execute_cypher_query`, etc.
-- Write/index via CLI: `cgc index`, `cgc delete`, `cgc clean`, `cgc add-package`, `cgc bundle import`
+MCP is query-only. For indexing, watching, deleting, and bundle load/import, use CLI terminal commands.
 
-Recommended split:
+**Example Prompts:**
 
-- Read context for MCP: `mcp-read`
-- Build context for writes: `mcp-build`
-- Promote from build -> read when ready.
+*   "Who calls the `process_payment` function?" -> *AI calls `analyze_code_relationships`*
+*   "Find all dead code in `utils.py`." -> *AI calls `find_dead_code`*
 
-Detailed step-by-step guide:
-- [Read-only MCP + Build/Promote Workflow](mcp_readonly_multi_workspace.md)
+**CLI write examples (outside MCP):**
 
-## 5. Troubleshooting
+```bash
+cgc index .
+cgc watch .
+cgc bundle load flask
+```
 
-- **MCP fails on empty read-only Kùzu DB**: startup now bootstraps schema once and reopens read-only.
-- **Context mismatch**: ensure MCP uses `--global-context` and explicit `--context`.
-- **General diagnostics**: run `cgc doctor`.
+## 4. Troubleshooting
+
+*   **"Component not found":** This usually means the MCP server didn't start. Check the logs in your AI editor.
+*   **"Database error":** Ensure your Neo4j container is running (`docker ps`) or that your Python environment is active.
