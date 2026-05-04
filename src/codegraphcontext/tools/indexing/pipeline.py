@@ -85,5 +85,34 @@ async def run_tree_sitter_index_async(
     t2 = time.time()
     info_logger(f"Function calls created in {t2 - t1:.1f}s. Total post-processing: {t2 - t0:.1f}s")
 
+    # ── Phase 4: embedding generation (optional, config-gated) ────────────────
+    from ...cli.config_manager import get_config_value as _gcv
+    if (_gcv("ENABLE_VECTOR_RESOLVE") or "false").lower() == "true":
+        try:
+            from .embeddings import EmbeddingPipeline
+            repo_path_str = str(path.resolve())
+            info_logger("[EMBED] Starting embedding pipeline...")
+            EmbeddingPipeline(writer.driver).run(repo_path_str)
+            info_logger("[EMBED] Embedding pipeline complete.")
+        except Exception as _ee:
+            info_logger(f"[EMBED] Embedding pipeline failed (skipping): {_ee}")
+
+    # ── Phase 5: inheritance-aware re-resolution (optional, config-gated) ─────
+    if (_gcv("ENABLE_INHERIT_RESOLVE") or "false").lower() == "true":
+        try:
+            from .resolution.post_resolution import run_inheritance_reresolve
+            vector_resolver = None
+            if (_gcv("ENABLE_VECTOR_RESOLVE") or "false").lower() == "true":
+                try:
+                    from .vector_resolver import VectorResolver
+                    vector_resolver = VectorResolver(writer.driver)
+                except Exception as _ve:
+                    info_logger(f"[VECTOR] Resolver unavailable: {_ve}")
+            repo_path_str = str(path.resolve())
+            improved = run_inheritance_reresolve(writer.driver, repo_path_str, vector_resolver)
+            info_logger(f"[INHERIT-RESOLVE] Post-resolution complete: {improved} edges improved")
+        except Exception as _ie:
+            info_logger(f"[INHERIT-RESOLVE] Post-resolution failed (skipping): {_ie}")
+
     if job_id:
         job_manager.update_job(job_id, status=JobStatus.COMPLETED, end_time=datetime.now())

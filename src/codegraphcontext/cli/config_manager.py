@@ -55,6 +55,11 @@ DEFAULT_CONFIG = {
     # JSON object mapping tool names to integer result-count limits.
     # Example: {"find_code": 20, "analyze_code_relationships": 10, "find_dead_code": 30}
     "TOOL_RESULT_LIMITS": "{}",
+    # Post-indexing resolution phases (default off)
+    "ENABLE_INHERIT_RESOLVE": "false",
+    "ENABLE_VECTOR_RESOLVE": "false",
+    "CGC_EMBEDDING_MODEL": "local",
+    "CGC_EMBEDDING_BATCH_SIZE": "256",
 }
 
 # Configuration key descriptions
@@ -84,6 +89,37 @@ CONFIG_DESCRIPTIONS = {
     "SKIP_EXTERNAL_RESOLUTION": "Skip resolution attempts for external library method calls (recommended for enterprise large Java/Spring codebases)",
     "MAX_TOOL_RESPONSE_TOKENS": "Maximum tokens per MCP tool response (0 = unlimited). Truncates oversized payloads and appends a notice.",
     "TOOL_RESULT_LIMITS": "JSON object mapping tool names to max result counts, e.g. {\"find_code\": 20, \"analyze_code_relationships\": 10}. Missing keys use built-in defaults.",
+    # Post-indexing resolution phases
+    "ENABLE_INHERIT_RESOLVE": (
+        "[Phase 5] Re-resolve ambiguous same-file CALLS edges using the inheritance graph (INHERITS relationships). "
+        "When enabled, methods called on an interface or abstract class are re-pointed to the correct concrete "
+        "implementation based on the class hierarchy, reducing tier-7 fallback edges. "
+        "WHEN TO ENABLE: any Java/Kotlin/C# codebase that uses inheritance or interface-based DI (e.g. Spring, OSGi). "
+        "PREREQUISITES: run 'cgc index' first so INHERITS edges exist in the graph. No extra tools needed. "
+        "COST: adds ~1-5 min per 50K functions at the end of each 'cgc index' run. Safe to toggle on/off — only adds new edges, never removes existing ones."
+    ),
+    "ENABLE_VECTOR_RESOLVE": (
+        "[Phase 4 + Phase 5 tiebreaker] Generate semantic embeddings for all Function nodes and use vector "
+        "similarity as a tiebreaker when inheritance resolution alone cannot distinguish between multiple candidates. "
+        "Phase 4 writes a 384-dim embedding to every Function node; Phase 5 queries those embeddings during re-resolution. "
+        "WHEN TO ENABLE: large codebases (>10K functions) where inheritance alone leaves many ambiguous calls "
+        "(tier-7 fallbacks still high after ENABLE_INHERIT_RESOLVE). Also useful for cross-language repos. "
+        "PREREQUISITES: (1) fastembed must be installed — run 'pip install fastembed'. "
+        "(2) Neo4j must be the active database (vector index not supported on FalkorDB/KuzuDB). "
+        "(3) ENABLE_INHERIT_RESOLVE should also be true — vector is a tiebreaker for Phase 5, not a replacement. "
+        "COST: Phase 4 takes ~15 min per 50K functions on CPU (first run only; incremental updates are fast). "
+        "Embedding model (~40 MB) is downloaded automatically on first use from HuggingFace."
+    ),
+    "CGC_EMBEDDING_MODEL": (
+        "Embedding backend for ENABLE_VECTOR_RESOLVE. "
+        "'local' uses fastembed (BAAI/bge-small-en-v1.5, 384-dim, runs on CPU, no GPU or API key needed). "
+        "'openai' uses OpenAI text-embedding-3-small (requires OPENAI_API_KEY env var, costs money per token). "
+        "Default: local"
+    ),
+    "CGC_EMBEDDING_BATCH_SIZE": (
+        "Number of function texts to embed per batch when ENABLE_VECTOR_RESOLVE=true. "
+        "Larger values are faster but use more RAM. Default: 256. Reduce to 64 if you hit memory errors."
+    ),
 }
 
 # Valid values for each config key
@@ -101,6 +137,9 @@ CONFIG_VALIDATORS = {
     "INDEX_SOURCE": ["true", "false"],
     "SCIP_INDEXER": ["true", "false"],
     "SKIP_EXTERNAL_RESOLUTION": ["true", "false"],
+    "ENABLE_INHERIT_RESOLVE": ["true", "false"],
+    "ENABLE_VECTOR_RESOLVE": ["true", "false"],
+    "CGC_EMBEDDING_MODEL": ["local", "openai"],
 }
 DEFAULT_CGCIGNORE_PATTERNS = """\
 # Default .cgcignore patterns

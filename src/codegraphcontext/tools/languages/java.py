@@ -93,6 +93,12 @@ class JavaTreeSitterParser:
 
             tree = self.parser.parse(bytes(source_code, "utf8"))
 
+            # Extract package declaration for qualified_name construction and FQN resolution
+            package_name = None
+            pkg_match = re.search(r'^\s*package\s+([\w.]+)\s*;', source_code, re.MULTILINE)
+            if pkg_match:
+                package_name = pkg_match.group(1)
+
             parsed_functions = []
             parsed_classes = []
             parsed_variables = []
@@ -107,9 +113,9 @@ class JavaTreeSitterParser:
                 results = execute_query(self.language, query, tree.root_node)
 
                 if capture_name == "functions":
-                    parsed_functions = self._parse_functions(results, source_code, path)
+                    parsed_functions = self._parse_functions(results, source_code, path, package_name)
                 elif capture_name == "classes":
-                    parsed_classes = self._parse_classes(results, source_code, path)
+                    parsed_classes = self._parse_classes(results, source_code, path, package_name)
                 elif capture_name == "imports":
                     parsed_imports = self._parse_imports(results, source_code)
                 elif capture_name == "variables":
@@ -132,6 +138,7 @@ class JavaTreeSitterParser:
                 "function_calls": parsed_calls,
                 "is_dependency": is_dependency,
                 "lang": self.language_name,
+                "package_name": package_name,
             }
 
         except Exception as e:
@@ -171,7 +178,7 @@ class JavaTreeSitterParser:
         if not node: return ""
         return node.text.decode("utf-8")
 
-    def _parse_functions(self, captures: list, source_code: str, path: Path) -> list[Dict[str, Any]]:
+    def _parse_functions(self, captures: list, source_code: str, path: Path, package_name: Optional[str] = None) -> list[Dict[str, Any]]:
         functions = []
         # Group by node identity or stable key to avoid duplicates
         seen_nodes = set()
@@ -213,6 +220,13 @@ class JavaTreeSitterParser:
                             "class_context": context_name if context_type and "class" in context_type else None
                         }
 
+                        if package_name:
+                            class_ctx = context_name if (context_type and "class" in context_type) else None
+                            if class_ctx:
+                                func_data["qualified_name"] = f"{package_name}.{class_ctx}.{func_name}"
+                            else:
+                                func_data["qualified_name"] = f"{package_name}.{func_name}"
+
                         if self.index_source:
                             func_data["source"] = source_text
                         
@@ -224,7 +238,7 @@ class JavaTreeSitterParser:
 
         return functions
 
-    def _parse_classes(self, captures: list, source_code: str, path: Path) -> list[Dict[str, Any]]:
+    def _parse_classes(self, captures: list, source_code: str, path: Path, package_name: Optional[str] = None) -> list[Dict[str, Any]]:
         classes = []
         seen_nodes = set()
 
@@ -278,6 +292,9 @@ class JavaTreeSitterParser:
                             "path": str(path),
                             "lang": self.language_name,
                         }
+
+                        if package_name:
+                            class_data["qualified_name"] = f"{package_name}.{class_name}"
 
                         if self.index_source:
                             class_data["source"] = source_text
@@ -479,13 +496,23 @@ def pre_scan_java(files: list[Path], parser_wrapper) -> dict:
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            
+
+            # Extract package for FQN construction (e.g. com.ea.nexus.billing.BillingService)
+            pkg_match = re.search(r'^\s*package\s+([\w.]+)\s*;', content, re.MULTILINE)
+            file_package = pkg_match.group(1) if pkg_match else None
+
             class_matches = re.finditer(r'\b(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)', content)
             for match in class_matches:
                 class_name = match.group(1)
                 if class_name not in name_to_files:
                     name_to_files[class_name] = []
                 name_to_files[class_name].append(str(path))
+                # Also register under FQN so Phase 2 qualified-import lookups resolve
+                if file_package:
+                    fqn = f"{file_package}.{class_name}"
+                    if fqn not in name_to_files:
+                        name_to_files[fqn] = []
+                    name_to_files[fqn].append(str(path))
             
             interface_matches = re.finditer(r'\b(?:public\s+|private\s+|protected\s+)?interface\s+(\w+)', content)
             for match in interface_matches:
@@ -493,6 +520,11 @@ def pre_scan_java(files: list[Path], parser_wrapper) -> dict:
                 if interface_name not in name_to_files:
                     name_to_files[interface_name] = []
                 name_to_files[interface_name].append(str(path))
+                if file_package:
+                    fqn = f"{file_package}.{interface_name}"
+                    if fqn not in name_to_files:
+                        name_to_files[fqn] = []
+                    name_to_files[fqn].append(str(path))
                 
         except Exception as e:
             error_logger(f"Error pre-scanning Java file {path}: {e}")

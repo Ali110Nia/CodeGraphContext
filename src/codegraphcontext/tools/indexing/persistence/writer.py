@@ -87,12 +87,14 @@ class GraphWriter:
             session.run(
                 """
                 MERGE (f:File {path: $path})
-                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency
+                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency,
+                    f.package_name = $package_name
             """,
                 path=file_path_str,
                 name=file_name,
                 relative_path=relative_path,
                 is_dependency=is_dependency,
+                package_name=file_data.get("package_name"),
             )
 
             file_path_obj = Path(file_path_str)
@@ -449,37 +451,43 @@ class GraphWriter:
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         q_fn_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         q_cls_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         q_cls_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         q_file_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         q_file_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier
         """
         groups: List[Tuple[str, List[Dict], str]] = [
             ("fn→fn", fn_to_fn, q_fn_to_fn),
