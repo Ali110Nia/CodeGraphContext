@@ -21,7 +21,10 @@ class KuzuDBManager:
     _instance = None
     _db = None
     _conn = None
-    _lock = threading.Lock()
+    _lock = threading.Lock()         # Guards singleton initialisation only.
+    _query_lock = threading.RLock()  # Serialises every conn.execute() call.
+    # RLock (reentrant) is required because KuzuSessionWrapper.run() calls
+    # itself recursively when triggering the UNWIND fallback path.
 
     def __new__(cls, *args, **kwargs):
         """Standard singleton pattern implementation."""
@@ -90,7 +93,7 @@ class KuzuDBManager:
                                 error_logger(f"Failed to initialize KùzuDB: {e}")
                                 raise
 
-        return KuzuDriverWrapper(self._conn)
+        return KuzuDriverWrapper(self._conn, self._query_lock)
 
     def _initialize_schema(self):
         """Creates Node and Rel tables if they don't exist."""
@@ -191,7 +194,8 @@ class KuzuDBManager:
         if self._conn is None:
             return False
         try:
-            self._conn.execute("RETURN 1")
+            with self._query_lock:
+                self._conn.execute("RETURN 1")
             return True
         except Exception:
             return False
@@ -217,16 +221,18 @@ class KuzuDBManager:
             return False, "KùzuDB is not installed. Run 'pip install real_ladybug'"
 
 class KuzuDriverWrapper:
-    def __init__(self, conn):
+    def __init__(self, conn, query_lock: threading.RLock):
         self.conn = conn
+        self._query_lock = query_lock
     def session(self):
-        return KuzuSessionWrapper(self.conn)
+        return KuzuSessionWrapper(self.conn, self._query_lock)
     def close(self):
         pass
 
 class KuzuSessionWrapper:
-    def __init__(self, conn):
+    def __init__(self, conn, query_lock: threading.RLock):
         self.conn = conn
+        self._query_lock = query_lock
         self.uid_map = {
             'Function': ['name', 'path', 'line_number'],
             'Class': ['name', 'path', 'line_number'],
@@ -273,12 +279,22 @@ class KuzuSessionWrapper:
         translated_query, translated_params = self._translate_query(query, parameters)
         debug_log(f"Translated Query: {translated_query[:200]}")
         try:
-            result = self.conn.execute(translated_query, translated_params)
+            # Acquire the query lock before touching the connection.
+            # KùzuDB's Connection is not thread-safe; without this lock, concurrent
+            # calls from asyncio.to_thread tool handlers and the background indexing
+            # coroutine would race on the same conn.execute(), causing C++ crashes
+            # or silent graph corruption. RLock is used so the UNWIND fallback below
+            # can call self.run() recursively from the same thread without deadlocking.
+            with self._query_lock:
+                result = self.conn.execute(translated_query, translated_params)
             return KuzuResultWrapper(result)
         except Exception as e:
-            # Silence specific non-errors
+            # Log non-fatal schema collisions at debug level instead of swallowing
+            # them silently.  This preserves the "idempotent CREATE" behaviour while
+            # still emitting a traceable message for unexpected collisions.
             err_str = str(e).lower()
             if "already exists" in err_str:
+                debug_log(f"Kuzu idempotent collision (already exists) — query: {query[:120]}")
                 return KuzuResultWrapper(None)
             
             # Fallback for KuzuDB UNWIND bug (unordered_map::at)
