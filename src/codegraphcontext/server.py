@@ -346,6 +346,32 @@ class MCPServer:
     def get_repository_stats_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.get_repository_stats(self.code_finder, **args)
 
+    def generate_report_tool(self, **args) -> Dict[str, Any]:
+        from .tools.report_generator import generate_report
+        output_path_raw = args.get("output_path")
+        output_path = Path(output_path_raw) if output_path_raw else self.cwd / "CGC_REPORT.md"
+        try:
+            report = generate_report(
+                self.db_manager,
+                output_path=output_path,
+                include_java=bool(args.get("include_java", False)),
+                god_node_limit=int(args.get("god_node_limit", 15)),
+                complexity_limit=int(args.get("complexity_limit", 15)),
+                cross_module_limit=int(args.get("cross_module_limit", 20)),
+            )
+            return {"status": "ok", "output_path": str(output_path), "report": report}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def find_java_spring_endpoints_tool(self, **args) -> Dict[str, Any]:
+        return analysis_handlers.find_java_spring_endpoints(self.code_finder, **args)
+
+    def find_java_spring_beans_tool(self, **args) -> Dict[str, Any]:
+        return analysis_handlers.find_java_spring_beans(self.code_finder, **args)
+
+    def find_datasource_nodes_tool(self, **args) -> Dict[str, Any]:
+        return analysis_handlers.find_datasource_nodes(self.code_finder, **args)
+
     def discover_codegraph_contexts_tool(self, **args) -> Dict[str, Any]:
         scan_path = Path(args.get("path", str(self.cwd))).resolve()
         max_depth = int(args.get("max_depth", 1))
@@ -466,6 +492,10 @@ class MCPServer:
             "get_repository_stats": self.get_repository_stats_tool,
             "discover_codegraph_contexts": self.discover_codegraph_contexts_tool,
             "switch_context": self.switch_context_tool,
+            "generate_report": self.generate_report_tool,
+            "find_java_spring_endpoints": self.find_java_spring_endpoints_tool,
+            "find_java_spring_beans": self.find_java_spring_beans_tool,
+            "find_datasource_nodes": self.find_datasource_nodes_tool,
         }
         handler = tool_map.get(tool_name)
         if handler:

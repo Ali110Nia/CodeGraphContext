@@ -6,6 +6,29 @@ from typing import Any, Dict, List, Optional, Tuple
 from ....cli.config_manager import get_config_value
 from ....utils.debug_log import info_logger
 
+# Confidence score for each resolution tier.
+# Higher = more certain the edge points to the correct target.
+_TIER_CONFIDENCE: Dict[int, float] = {
+    1: 1.00,  # explicit this/self/super receiver — definitionally same-class
+    2: 0.95,  # local function or class defined in the same file
+    3: 0.88,  # inferred receiver type + FQN import key (Phase 1 adds FQN entries)
+    4: 0.72,  # inferred receiver type + short-name (possible first-match bias)
+    5: 0.90,  # unique short name — only one file in the graph defines it
+    6: 0.85,  # FQN key in imports_map via qualified import declaration
+    7: 0.70,  # FQN matched as path-substring across multiple candidates
+    8: 0.25,  # alphabetical-first of multiple candidates (wrong most of the time)
+    9: 0.08,  # same-file fallback for obj.method() — definitionally wrong
+}
+
+# Human-readable confidence labels surfaced on graph edges (#885)
+def _confidence_label(tier: int, is_unresolved_external: bool) -> str:
+    """Map a resolution tier to EXTRACTED / INFERRED / AMBIGUOUS."""
+    if is_unresolved_external or tier >= 8:
+        return "AMBIGUOUS"
+    if tier in (1, 2, 5, 6):
+        return "EXTRACTED"
+    return "INFERRED"
+
 
 def resolve_function_call(
     call: Dict[str, Any],
@@ -22,6 +45,7 @@ def resolve_function_call(
 
     resolved_called_name = called_name
     resolved_path = None
+    resolution_tier = 9  # default: same-file fallback
     full_call = call.get("full_name", called_name)
     base_obj = full_call.split(".")[0] if "." in full_call else None
 
@@ -32,16 +56,35 @@ def resolve_function_call(
     else:
         lookup_name = base_obj if base_obj else called_name
 
+    # ── Tier 1: explicit self/this/super — same-class, always correct ──────────
     if base_obj in ("self", "this", "super", "super()", "cls", "@") and not is_chained_call:
         resolved_path = caller_file_path
+        resolution_tier = 1
+
+    # ── Tier 2: call target defined locally in the same file ───────────────────
     elif lookup_name in local_names:
         resolved_path = caller_file_path
+        resolution_tier = 2
+
+    # ── Tier 3/4: receiver type inferred from variable declaration ─────────────
     elif call.get("inferred_obj_type"):
         obj_type = call["inferred_obj_type"]
-        possible_paths = imports_map.get(obj_type, [])
-        if len(possible_paths) > 0:
-            resolved_path = possible_paths[0]
+        # Tier 3: FQN lookup — only when local import gives us the exact package.
+        # Phase 1 adds FQN entries to imports_map so `imports_map[fqn]` has 1 path.
+        if obj_type in local_imports:
+            fqn = local_imports[obj_type]
+            fqn_paths = imports_map.get(fqn, [])
+            if len(fqn_paths) == 1:
+                resolved_path = fqn_paths[0]
+                resolution_tier = 3
+        # Tier 4: short-name lookup (legacy — may be first-match biased)
+        if not resolved_path:
+            possible_paths = imports_map.get(obj_type, [])
+            if possible_paths:
+                resolved_path = possible_paths[0]
+                resolution_tier = 4
 
+    # ── Tier 5/6/7: lookup by call-site name (no inferred type) ───────────────
     if not resolved_path:
         possible_paths = imports_map.get(lookup_name, [])
         if not possible_paths and lookup_name in local_imports:
@@ -53,53 +96,63 @@ def resolve_function_call(
                 if called_name == base_obj or called_name == call["name"]:
                     resolved_called_name = imported_name
         if len(possible_paths) == 1:
+            # Tier 5: globally unique short name — high confidence
             resolved_path = possible_paths[0]
-        elif len(possible_paths) > 1:
-            if lookup_name in local_imports:
-                full_import_name = local_imports[lookup_name]
-                if full_import_name in imports_map:
-                    direct_paths = imports_map[full_import_name]
-                    if direct_paths and len(direct_paths) == 1:
-                        resolved_path = direct_paths[0]
-                if not resolved_path:
-                    for path in possible_paths:
-                        if full_import_name.replace(".", "/") in path:
-                            resolved_path = path
-                            break
+            resolution_tier = 5
+        elif len(possible_paths) > 1 and lookup_name in local_imports:
+            full_import_name = local_imports[lookup_name]
+            # Tier 6: FQN key in imports_map (added by Phase 1 pre_scan changes)
+            fqn_paths = imports_map.get(full_import_name, [])
+            if fqn_paths and len(fqn_paths) == 1:
+                resolved_path = fqn_paths[0]
+                resolution_tier = 6
+            # Tier 7: FQN as path-substring across candidates
+            if not resolved_path:
+                fqn_as_path = full_import_name.replace(".", "/")
+                for p in possible_paths:
+                    if fqn_as_path in p:
+                        resolved_path = p
+                        resolution_tier = 7
+                        break
 
-    if not resolved_path:
-        is_unresolved_external = True
-    else:
-        is_unresolved_external = False
-
-    if not resolved_path:
-        possible_paths = imports_map.get(lookup_name, [])
-        if len(possible_paths) > 0:
-            if lookup_name in local_imports:
-                pass
-            else:
-                pass
+    # ── Tier 8/9: last-resort fallbacks ────────────────────────────────────────
     if not resolved_path:
         if called_name in local_names:
+            # Re-check with the bare called_name (covers chained-call edge cases)
             resolved_path = caller_file_path
-            is_unresolved_external = False
+            resolution_tier = 2
         elif resolved_called_name in imports_map and imports_map[resolved_called_name]:
             candidates = imports_map[resolved_called_name]
-            for path in candidates:
-                for imp_name in local_imports.values():
-                    if imp_name.replace(".", "/") in path:
-                        resolved_path = path
-                        is_unresolved_external = False
+            # Try to match any candidate via a local import path hint
+            for p in candidates:
+                for imp_fqn in local_imports.values():
+                    if imp_fqn.replace(".", "/") in p:
+                        resolved_path = p
+                        resolution_tier = 7
                         break
                 if resolved_path:
                     break
+            # Tier 8: alphabetical first of multiple candidates
             if not resolved_path:
                 resolved_path = candidates[0]
+                resolution_tier = 8
         else:
+            # Tier 9: same-file fallback — wrong for any obj.method() call
             resolved_path = caller_file_path
+            resolution_tier = 9
+
+    # Determine whether this resolution is "external" (unresolvable target).
+    # Tier 9 for non-self/super calls means we gave up — treat as external.
+    is_unresolved_external = (
+        resolution_tier == 9
+        and base_obj not in ("self", "this", "super", "super()", "cls", "@")
+    )
 
     if skip_external and is_unresolved_external:
         return None
+
+    confidence = _TIER_CONFIDENCE.get(resolution_tier, 0.1)
+    conf_label = _confidence_label(resolution_tier, is_unresolved_external)
 
     caller_context = call.get("context")
     if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
@@ -114,6 +167,9 @@ def resolve_function_call(
             "line_number": call["line_number"],
             "args": call.get("args", []),
             "full_call_name": call.get("full_name", called_name),
+            "confidence": confidence,
+            "confidence_label": conf_label,
+            "resolution_tier": resolution_tier,
         }
     return {
         "type": "file",
@@ -123,6 +179,9 @@ def resolve_function_call(
         "line_number": call["line_number"],
         "args": call.get("args", []),
         "full_call_name": call.get("full_name", called_name),
+        "confidence": confidence,
+        "confidence_label": conf_label,
+        "resolution_tier": resolution_tier,
     }
 
 

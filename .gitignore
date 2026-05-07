@@ -79,3 +79,6 @@ todo.md
 .ignore
 extensions/vscode/out/
 extensions/vscode/*.vsix
+PHASE1_PHASE2_CHANGES.md
+NEXUS_BENCHMARK_BEFORE.md
+CGC_VALUE_PROPOSITION.md
