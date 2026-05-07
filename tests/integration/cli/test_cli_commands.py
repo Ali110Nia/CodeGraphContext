@@ -286,6 +286,35 @@ def cli_test_stubs(monkeypatch, tmp_path):
     bundle_module.CGCBundle = _FakeCGCBundle
     monkeypatch.setitem(sys.modules, "codegraphcontext.core.cgc_bundle", bundle_module)
 
+    monkeypatch.setattr(cli_main, "_write_datasource_graph", lambda *_args, **_kwargs: None)
+
+    datasource_pkg = types.ModuleType("codegraphcontext.tools.datasources")
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources", datasource_pkg)
+
+    mysql_module = types.ModuleType("codegraphcontext.tools.datasources.mysql_ingester")
+    mysql_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "mysql-test"},
+        "tables": [{"name": "users"}],
+        "columns": [{"name": "id"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.mysql_ingester", mysql_module)
+
+    cassandra_module = types.ModuleType("codegraphcontext.tools.datasources.cassandra_ingester")
+    cassandra_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "cassandra-test"},
+        "tables": [{"name": "users"}],
+        "columns": [{"name": "id"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.cassandra_ingester", cassandra_module)
+
+    redis_module = types.ModuleType("codegraphcontext.tools.datasources.redis_ingester")
+    redis_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "redis-test"},
+        "tables": [{"name": "pattern:user:*"}],
+        "columns": [{"name": "key"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.redis_ingester", redis_module)
+
     return {
         "bundle_file": downloaded_bundle,
         "bundle_export": tmp_path / "exported.cgc",
@@ -314,6 +343,8 @@ def test_cli_inventory_grouped_from_source():
     assert inventory["registry"] == {"list", "search", "download", "request"}
     assert inventory["find"] == {"name", "pattern", "type", "variable", "content", "decorator", "argument"}
     assert inventory["analyze"] == {"calls", "callers", "chain", "deps", "tree", "complexity", "dead-code", "overrides", "variable"}
+    if "datasource" in inventory:
+        assert inventory["datasource"] == {"mysql", "cassandra", "redis"}
     if "context" in inventory:
         assert inventory["context"] == {"list", "create", "delete", "mode", "default"}
 
@@ -391,6 +422,14 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
                 ["context", "delete", "ci-context"],
                 ["context", "mode", "single"],
                 ["context", "default", "ci-context"],
+            ]
+        )
+    if "datasource" in source_inventory:
+        command_matrix.extend(
+            [
+                ["datasource", "mysql", "--host", "localhost", "--user", "root", "--password", "pw", "--database", "demo"],
+                ["datasource", "cassandra", "--host", "localhost", "--keyspace", "demo"],
+                ["datasource", "redis", "--host", "localhost"],
             ]
         )
 

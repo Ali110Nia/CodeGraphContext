@@ -510,106 +510,15 @@ class GraphBuilder:
 
     # Second pass to create relationships that depend on all files being present like call functions and class inheritance
     def _resolve_function_call(self, call: Dict, caller_file_path: str, local_names: set, local_imports: dict, imports_map: dict, skip_external: bool) -> Optional[Dict]:
-        """Resolve a single function call to its target. Returns a dict with call params or None if skipped."""
-        called_name = call['name']
-        if called_name in __builtins__: return None
-
-        resolved_path = None
-        full_call = call.get('full_name', called_name)
-        base_obj = full_call.split('.')[0] if '.' in full_call else None
-        
-        is_chained_call = full_call.count('.') > 1 if '.' in full_call else False
-        
-        if is_chained_call and base_obj in ('self', 'this', 'super', 'super()', 'cls', '@'):
-            lookup_name = called_name
-        else:
-            lookup_name = base_obj if base_obj else called_name
-
-        if base_obj in ('self', 'this', 'super', 'super()', 'cls', '@') and not is_chained_call:
-            resolved_path = caller_file_path
-        elif lookup_name in local_names:
-            resolved_path = caller_file_path
-        elif call.get('inferred_obj_type'):
-            obj_type = call['inferred_obj_type']
-            possible_paths = imports_map.get(obj_type, [])
-            if len(possible_paths) > 0:
-                resolved_path = possible_paths[0]
-        
-        if not resolved_path:
-            possible_paths = imports_map.get(lookup_name, [])
-            if len(possible_paths) == 1:
-                resolved_path = possible_paths[0]
-            elif len(possible_paths) > 1:
-                if lookup_name in local_imports:
-                    full_import_name = local_imports[lookup_name]
-                    if full_import_name in imports_map:
-                         direct_paths = imports_map[full_import_name]
-                         if direct_paths and len(direct_paths) == 1:
-                             resolved_path = direct_paths[0]
-                    if not resolved_path:
-                        for path in possible_paths:
-                            if full_import_name.replace('.', '/') in path:
-                                resolved_path = path
-                                break
-        
-        if not resolved_path:
-            is_unresolved_external = True
-        else:
-            is_unresolved_external = False
-        
-        # Legacy fallback
-        if not resolved_path:
-            possible_paths = imports_map.get(lookup_name, [])
-            if len(possible_paths) > 0:
-                 if lookup_name in local_imports:
-                     pass
-                 else:
-                    pass
-        if not resolved_path:
-            if called_name in local_names:
-                resolved_path = caller_file_path
-                is_unresolved_external = False
-            elif called_name in imports_map and imports_map[called_name]:
-                candidates = imports_map[called_name]
-                for path in candidates:
-                    for imp_name in local_imports.values():
-                        if imp_name.replace('.', '/') in path:
-                            resolved_path = path
-                            is_unresolved_external = False
-                            break
-                    if resolved_path: break
-                if not resolved_path:
-                    resolved_path = candidates[0]
-            else:
-                resolved_path = caller_file_path
-        
-        if skip_external and is_unresolved_external:
-            return None
-
-        caller_context = call.get('context')
-        if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
-            caller_name, _, caller_line_number = caller_context
-            return {
-                'type': 'function',
-                'caller_name': caller_name,
-                'caller_file_path': caller_file_path,
-                'caller_line_number': caller_line_number,
-                'called_name': called_name,
-                'called_file_path': resolved_path,
-                'line_number': call['line_number'],
-                'args': call.get('args', []),
-                'full_call_name': call.get('full_name', called_name),
-            }
-        else:
-            return {
-                'type': 'file',
-                'caller_file_path': caller_file_path,
-                'called_name': called_name,
-                'called_file_path': resolved_path,
-                'line_number': call['line_number'],
-                'args': call.get('args', []),
-                'full_call_name': call.get('full_name', called_name),
-            }
+        """Resolve a single function call to its target."""
+        return resolve_function_call(
+            call,
+            caller_file_path,
+            local_names,
+            local_imports,
+            imports_map,
+            skip_external,
+        )
 
     def _create_all_function_calls(self, all_file_data: list[Dict], imports_map: dict, file_class_lookup: Optional[Dict] = None):
         """Create CALLS relationships using fully label-specific UNWIND queries (V3).

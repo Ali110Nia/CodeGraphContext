@@ -66,6 +66,11 @@ async def run_tree_sitter_index_async(
         if job_id:
             job_manager.update_job(job_id, processed_files=processed_count)
         if processed_count % 50 == 0:
+            # Cooperative yield between files.  add_file_to_graph() has already
+            # returned at this point, so all KùzuDB writes for the current file
+            # are complete.  Concurrent tool-handler threads (via asyncio.to_thread)
+            # that call session.run() will safely block on KuzuSessionWrapper._query_lock
+            # rather than racing on the shared Connection.
             await asyncio.sleep(0)
 
     info_logger(
