@@ -50,6 +50,7 @@ def resolve_inheritance_link(
             "path": caller_file_path,
             "parent_name": target_class_name,
             "resolved_parent_file_path": resolved_path,
+            "confidence_label": "EXTRACTED",
         }
     return None
 

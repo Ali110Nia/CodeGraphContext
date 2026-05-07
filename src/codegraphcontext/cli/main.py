@@ -109,7 +109,7 @@ def mcp_setup():
     Sets up CodeGraphContext integration with your IDE or CLI tool:
     - VS Code, Cursor, Windsurf
     - Claude Desktop, Gemini CLI
-    - Cline, RooCode, Amazon Q Developer
+    - Cline, RooCode, Amazon Q Developer, Goose
     - OpenCode (prints stdio config + link to vendor docs)
     
     Works with FalkorDB by default (no database setup needed).
@@ -1092,6 +1092,46 @@ def delete(
             raise typer.Exit(code=1)
         
         delete_helper(path, context)
+
+
+@app.command()
+def report(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path. Defaults to CGC_REPORT.md in the current directory."),
+    java: bool = typer.Option(False, "--java", "-j", help="Include Spring/Maven Java sections."),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+):
+    """
+    Generate a CGC_REPORT.md with god nodes, complexity, cross-module connections, and suggested queries.
+
+    Use --java to also include Spring endpoint tables, bean stereotype counts,
+    and Maven module dependency summaries.
+
+    Examples:
+        cgc report
+        cgc report --output /tmp/my_report.md
+        cgc report --java
+    """
+    _load_credentials()
+    output_path = Path(output) if output else Path.cwd() / "CGC_REPORT.md"
+    db_manager, _, _ = _initialize_services(context)
+    try:
+        from codegraphcontext.tools.report_generator import generate_report
+        report_text = generate_report(db_manager, output_path=output_path, include_java=java)
+        console.print(f"[green]✓[/green] Report written to [bold]{output_path}[/bold]")
+        # Print a short preview (first ~40 lines)
+        preview_lines = report_text.splitlines()[:40]
+        console.print("\n".join(preview_lines))
+        if len(report_text.splitlines()) > 40:
+            console.print(f"[dim]... ({len(report_text.splitlines())} lines total, see {output_path})[/dim]")
+    except Exception as exc:
+        console.print(f"[red]Report generation failed:[/red] {exc}")
+        raise typer.Exit(code=1)
+    finally:
+        try:
+            db_manager.close_driver()
+        except Exception:
+            pass
+
 
 @app.command()
 def visualize(
@@ -2380,6 +2420,150 @@ def main(
         console.print("👉 Run [cyan]cgc help[/cyan] to see all available commands")
         console.print("👉 Run [cyan]cgc --version[/cyan] to check the version\n")
         console.print("👉 Running [green]codegraphcontext[/green] works the same as using [green]cgc[/green]")
+
+
+# ============================================================================
+# DATASOURCE COMMAND GROUP — Index external data sources (#843)
+# ============================================================================
+
+datasource_app = typer.Typer(help="Index external data sources (Redis, Cassandra, Aurora MySQL) into the code graph")
+app.add_typer(datasource_app, name="datasource")
+
+
+@datasource_app.command("mysql")
+def datasource_mysql(
+    ctx: typer.Context,
+    host: str = typer.Option(..., "--host", "-H", help="MySQL host / Aurora endpoint"),
+    port: int = typer.Option(3306, "--port", "-p", help="MySQL port"),
+    user: str = typer.Option(..., "--user", "-u", help="MySQL username"),
+    password: str = typer.Option(..., "--password", "-P", help="MySQL password", hide_input=True),
+    database: str = typer.Option(..., "--database", "-d", help="Database / schema name"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Logical datasource name (default: mysql-<database>)"),
+    env: str = typer.Option("production", "--env", "-e", help="Deployment environment label"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="CGC context to use"),
+):
+    """Ingest Aurora MySQL schema (tables + columns) and write to the code graph.
+
+    Requires: pip install PyMySQL
+    """
+    try:
+        from codegraphcontext.tools.datasources.mysql_ingester import ingest as mysql_ingest
+    except ImportError as e:
+        console.print(f"[red]Import error:[/red] {e}")
+        raise typer.Exit(1)
+
+    if context:
+        config_manager.set_config_value("CONTEXT", context)
+
+    console.print(f"[cyan]Connecting to Aurora MySQL at {host}:{port}/{database}...[/cyan]")
+    try:
+        result = mysql_ingest(host=host, port=port, user=user, password=password,
+                               database=database, name=name, env=env)
+    except Exception as exc:
+        console.print(f"[red]Failed to connect / ingest:[/red] {exc}")
+        raise typer.Exit(1)
+
+    _write_datasource_graph(result)
+    console.print(
+        f"[green]✓ MySQL datasource[/green] [bold]{result['datasource']['name']}[/bold] indexed: "
+        f"{len(result.get('tables', []))} tables, {len(result.get('columns', []))} columns"
+    )
+
+
+@datasource_app.command("cassandra")
+def datasource_cassandra(
+    ctx: typer.Context,
+    host: str = typer.Option(..., "--host", "-H", help="Cassandra contact point (comma-separated for multiple)"),
+    port: int = typer.Option(9042, "--port", "-p", help="Cassandra native transport port"),
+    keyspace: str = typer.Option(..., "--keyspace", "-k", help="Keyspace to ingest"),
+    username: Optional[str] = typer.Option(None, "--user", "-u", help="Cassandra username"),
+    password: Optional[str] = typer.Option(None, "--password", "-P", help="Cassandra password", hide_input=True),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Logical datasource name (default: cassandra-<keyspace>)"),
+    env: str = typer.Option("production", "--env", "-e", help="Deployment environment label"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="CGC context to use"),
+):
+    """Ingest Cassandra keyspace schema (tables + columns) and write to the code graph.
+
+    Requires: pip install cassandra-driver
+    """
+    try:
+        from codegraphcontext.tools.datasources.cassandra_ingester import ingest as cassandra_ingest
+    except ImportError as e:
+        console.print(f"[red]Import error:[/red] {e}")
+        raise typer.Exit(1)
+
+    if context:
+        config_manager.set_config_value("CONTEXT", context)
+
+    hosts = [h.strip() for h in host.split(",")]
+    console.print(f"[cyan]Connecting to Cassandra at {hosts}/{keyspace}...[/cyan]")
+    try:
+        result = cassandra_ingest(hosts=hosts, port=port, keyspace=keyspace,
+                                   username=username, password=password, name=name, env=env)
+    except Exception as exc:
+        console.print(f"[red]Failed to connect / ingest:[/red] {exc}")
+        raise typer.Exit(1)
+
+    _write_datasource_graph(result)
+    console.print(
+        f"[green]✓ Cassandra datasource[/green] [bold]{result['datasource']['name']}[/bold] indexed: "
+        f"{len(result.get('tables', []))} tables, {len(result.get('columns', []))} columns"
+    )
+
+
+@datasource_app.command("redis")
+def datasource_redis(
+    ctx: typer.Context,
+    host: str = typer.Option(..., "--host", "-H", help="Redis host"),
+    port: int = typer.Option(6379, "--port", "-p", help="Redis port"),
+    db: int = typer.Option(0, "--db", help="Redis database index"),
+    password: Optional[str] = typer.Option(None, "--password", "-P", help="Redis AUTH password", hide_input=True),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Logical datasource name"),
+    env: str = typer.Option("production", "--env", "-e", help="Deployment environment label"),
+    max_keys: int = typer.Option(10000, "--max-keys", help="Maximum keys to scan (avoid full scan in large clusters)"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="CGC context to use"),
+):
+    """Discover Redis key patterns and write to the code graph.
+
+    Scans up to --max-keys keys and groups them into patterns (e.g. user:*).
+
+    Requires: pip install redis
+    """
+    try:
+        from codegraphcontext.tools.datasources.redis_ingester import ingest as redis_ingest
+    except ImportError as e:
+        console.print(f"[red]Import error:[/red] {e}")
+        raise typer.Exit(1)
+
+    if context:
+        config_manager.set_config_value("CONTEXT", context)
+
+    console.print(f"[cyan]Connecting to Redis at {host}:{port}/{db}...[/cyan]")
+    try:
+        result = redis_ingest(host=host, port=port, db=db, password=password,
+                               name=name, env=env, max_keys=max_keys)
+    except Exception as exc:
+        console.print(f"[red]Failed to connect / ingest:[/red] {exc}")
+        raise typer.Exit(1)
+
+    _write_datasource_graph(result)
+    console.print(
+        f"[green]✓ Redis datasource[/green] [bold]{result['datasource']['name']}[/bold] indexed: "
+        f"{len(result.get('key_patterns', []))} key patterns"
+    )
+
+
+def _write_datasource_graph(ingested: dict) -> None:
+    """Shared helper: write ingested datasource dict to the active graph."""
+    from codegraphcontext.core.database import DatabaseManager
+    dm = DatabaseManager()
+    driver = dm.get_driver()
+    if driver is None:
+        console.print("[red]No active graph connection. Run[/red] cgc context switch <name> [red]first.[/red]")
+        raise typer.Exit(1)
+
+    from codegraphcontext.tools.indexing.persistence.writer import GraphWriter
+    GraphWriter(driver).write_datasource_graph(ingested)
 
 
 if __name__ == "__main__":

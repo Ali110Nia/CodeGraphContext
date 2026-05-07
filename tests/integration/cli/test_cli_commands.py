@@ -378,6 +378,7 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
         ["n"],
         ["export", bundle_export],
         ["load", bundle_file],
+        ["report"],
     ]
 
     source_inventory = _inventory_from_main_source()
