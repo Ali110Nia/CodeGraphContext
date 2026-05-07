@@ -104,7 +104,7 @@ class KuzuDBManager:
         
         node_tables = [
             ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, indexed_at STRING, commit_hash STRING, PRIMARY KEY (path)"),
-            ("File", "path STRING, name STRING, relative_path STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
+            ("File", "path STRING, name STRING, relative_path STRING, package_name STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
             ("Directory", "path STRING, name STRING, PRIMARY KEY (path)"),
             ("Module", "name STRING, lang STRING, full_import_name STRING, PRIMARY KEY (name)"),
             # For types with composite keys (name, path, line_number), we use a 'uid'
@@ -165,6 +165,7 @@ class KuzuDBManager:
     def _run_schema_migrations(self):
         """Add columns introduced after older local Kùzu databases were created."""
         migrations = [
+            ("File", "package_name", "STRING"),
             ("Module", "full_import_name", "STRING"),
             ("IMPORTS", "full_import_name", "STRING"),
             ("IMPORTS", "imported_name", "STRING"),
@@ -427,7 +428,7 @@ class KuzuSessionWrapper:
         # 0. Define Schema Map (Strict property filtering)
         SCHEMA_MAP = {
             'Repository': {'path', 'name', 'is_dependency'},
-            'File': {'path', 'name', 'relative_path', 'is_dependency'},
+            'File': {'path', 'name', 'relative_path', 'package_name', 'is_dependency'},
             'Directory': {'path', 'name'},
             'Module': {'name', 'lang', 'full_import_name'},
             'Function': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'cyclomatic_complexity', 'context', 'context_type', 'class_context', 'is_dependency', 'decorators', 'args'},
