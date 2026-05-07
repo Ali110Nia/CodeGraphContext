@@ -193,5 +193,87 @@ TOOLS = {
                 "repo_path": {"type": "string", "description": "Optional: Path to a specific repository. If not provided, returns overall database statistics."}
             }
         }
+    },
+    "discover_codegraph_contexts": {
+        "name": "discover_codegraph_contexts",
+        "description": "Scan child directories of the current workspace (or a given path) for .codegraphcontext folders that contain indexed code graph databases. Useful when the IDE is opened on a parent folder that itself has no database, but its sub-projects do.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Optional: Root directory to scan. Defaults to the server's current working directory."},
+                "max_depth": {"type": "integer", "description": "How many levels of child directories to scan. Defaults to 1 (immediate children only).", "default": 1}
+            }
+        }
+    },
+    "switch_context": {
+        "name": "switch_context",
+        "description": "Switch the current MCP session to use a different .codegraphcontext database. Provide the path to the repo directory (or its .codegraphcontext/ folder). The server will reconnect to that database so subsequent queries use it. By default the mapping is saved globally for persistence across restarts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context_path": {"type": "string", "description": "Path to the repository root that contains a .codegraphcontext/ folder, or directly to the .codegraphcontext/ folder itself."},
+                "save": {"type": "boolean", "description": "Whether to persist this mapping so the server reconnects automatically next time. Defaults to true.", "default": True}
+            },
+            "required": ["context_path"]
+        }
+    },
+    "generate_report": {
+        "name": "generate_report",
+        "description": "Generate a CGC_REPORT.md summarising god nodes (highest fan-in), most complex functions, cross-module coupling, potential dead code, and suggested Cypher queries. Use include_java=true to also include Spring endpoint tables, bean stereotype counts, and Maven module dependency summaries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "output_path": {"type": "string", "description": "Where to write the report. Defaults to CGC_REPORT.md in the server working directory."},
+                "include_java": {"type": "boolean", "description": "Include Spring/Maven Java-specific sections.", "default": False},
+                "god_node_limit": {"type": "integer", "description": "Max rows for god-nodes section.", "default": 15},
+                "complexity_limit": {"type": "integer", "description": "Max rows for complexity section.", "default": 15},
+                "cross_module_limit": {"type": "integer", "description": "Max rows for cross-module connections section.", "default": 20}
+            }
+        }
+    },
+    "find_java_spring_endpoints": {
+        "name": "find_java_spring_endpoints",
+        "description": "Find all Spring HTTP endpoint handler functions in the indexed Java codebase. Optionally filter by HTTP method (GET, POST, PUT, DELETE, PATCH) or URL path pattern.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "http_method": {"type": "string", "description": "Optional: HTTP method to filter by (GET, POST, PUT, DELETE, PATCH).", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"]},
+                "path_pattern": {"type": "string", "description": "Optional: URL path substring to filter by (e.g. '/api/users')."},
+                "repo_path": {"type": "string", "description": "Optional: Restrict search to a specific repository path."}
+            }
+        }
+    },
+    "find_java_spring_beans": {
+        "name": "find_java_spring_beans",
+        "description": "Find Spring bean classes by stereotype (CONTROLLER, REST_CONTROLLER, SERVICE, REPOSITORY, COMPONENT, CONFIGURATION). Returns class names, file paths, and injection counts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "stereotype": {"type": "string", "description": "Optional: Filter by Spring stereotype.", "enum": ["CONTROLLER", "REST_CONTROLLER", "SERVICE", "REPOSITORY", "COMPONENT", "CONFIGURATION"]},
+                "repo_path": {"type": "string", "description": "Optional: Restrict search to a specific repository path."}
+            }
+        }
+    },
+    "find_datasource_nodes": {
+        "name": "find_datasource_nodes",
+        "description": "Query Datasource, DbTable, DbColumn, and RedisKeyPattern nodes in the code graph. Returns datasources and their tables/key-patterns, optionally filtered by kind or name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": "Optional: Filter by datasource kind.",
+                    "enum": ["mysql", "cassandra", "redis"]
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional: Filter by datasource name (substring match)."
+                },
+                "include_columns": {
+                    "type": "boolean",
+                    "description": "If true, include DbColumn / RedisKeyPattern details in the response. Default false."
+                }
+            }
+        }
     }
 }

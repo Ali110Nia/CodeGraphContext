@@ -9,6 +9,7 @@ import time
 import threading
 import re
 import json
+import hashlib
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
@@ -21,7 +22,10 @@ class KuzuDBManager:
     _instance = None
     _db = None
     _conn = None
-    _lock = threading.Lock()
+    _lock = threading.Lock()         # Guards singleton initialisation only.
+    _query_lock = threading.RLock()  # Serialises every conn.execute() call.
+    # RLock (reentrant) is required because KuzuSessionWrapper.run() calls
+    # itself recursively when triggering the UNWIND fallback path.
 
     def __new__(cls, *args, **kwargs):
         """Standard singleton pattern implementation."""
@@ -66,7 +70,7 @@ class KuzuDBManager:
         if self._conn is None:
             with self._lock:
                 if self._conn is None:
-                    import kuzu
+                    import real_ladybug as kuzu
                     max_retries = 5
                     for attempt in range(max_retries):
                         try:
@@ -77,7 +81,7 @@ class KuzuDBManager:
                             info_logger("KùzuDB connection established and schema verified")
                             break
                         except ImportError:
-                            error_logger("KùzuDB is not installed. Run 'pip install kuzu'")
+                            error_logger("KùzuDB is not installed. Run 'pip install real_ladybug'")
                             raise ValueError("KùzuDB missing.")
                         except Exception as e:
                             if "lock" in str(e).lower() and attempt < max_retries - 1:
@@ -90,7 +94,7 @@ class KuzuDBManager:
                                 error_logger(f"Failed to initialize KùzuDB: {e}")
                                 raise
 
-        return KuzuDriverWrapper(self._conn)
+        return KuzuDriverWrapper(self._conn, self._query_lock)
 
     def _initialize_schema(self):
         """Creates Node and Rel tables if they don't exist."""
@@ -99,8 +103,8 @@ class KuzuDBManager:
         # but we can wrap in try-except or check metadata.
         
         node_tables = [
-            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
-            ("File", "path STRING, name STRING, relative_path STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
+            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, indexed_at STRING, commit_hash STRING, PRIMARY KEY (path)"),
+            ("File", "path STRING, name STRING, relative_path STRING, package_name STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
             ("Directory", "path STRING, name STRING, PRIMARY KEY (path)"),
             ("Module", "name STRING, lang STRING, full_import_name STRING, PRIMARY KEY (name)"),
             # For types with composite keys (name, path, line_number), we use a 'uid'
@@ -156,6 +160,30 @@ class KuzuDBManager:
                     warning_logger(f"Kuzu Schema Rel Error ({table_name}): {e}")
                     debug_log(f"Kuzu Schema Rel Error ({table_name}): {e}")
 
+        self._run_schema_migrations()
+
+    def _run_schema_migrations(self):
+        """Add columns introduced after older local Kùzu databases were created."""
+        migrations = [
+            ("File", "package_name", "STRING"),
+            ("Module", "full_import_name", "STRING"),
+            ("IMPORTS", "full_import_name", "STRING"),
+            ("IMPORTS", "imported_name", "STRING"),
+            # Freshness properties added to Repository in 0.4.6
+            ("Repository", "indexed_at", "STRING"),
+            ("Repository", "commit_hash", "STRING"),
+        ]
+
+        for table_name, column_name, column_type in migrations:
+            try:
+                self._conn.execute(f"ALTER TABLE `{table_name}` ADD {column_name} {column_type}")
+            except Exception as e:
+                err = str(e).lower()
+                if "already exists" in err or "duplicate" in err or "already has property" in err:
+                    continue
+                warning_logger(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
+                debug_log(f"Kuzu Schema Migration Error ({table_name}.{column_name}): {e}")
+
     def close_driver(self):
         """Closes the connection."""
         if self._conn is not None:
@@ -168,7 +196,8 @@ class KuzuDBManager:
         if self._conn is None:
             return False
         try:
-            self._conn.execute("RETURN 1")
+            with self._query_lock:
+                self._conn.execute("RETURN 1")
             return True
         except Exception:
             return False
@@ -188,22 +217,27 @@ class KuzuDBManager:
     @staticmethod
     def test_connection(db_path: str = None) -> Tuple[bool, Optional[str]]:
         try:
-            import kuzu
+            import real_ladybug as kuzu
             return True, None
         except ImportError:
-            return False, "KùzuDB is not installed. Run 'pip install kuzu'"
+            return False, "KùzuDB is not installed. Run 'pip install real_ladybug'"
 
 class KuzuDriverWrapper:
-    def __init__(self, conn):
+    def __init__(self, conn, query_lock: Optional[threading.RLock] = None):
         self.conn = conn
+        self._query_lock = query_lock or threading.RLock()
     def session(self):
-        return KuzuSessionWrapper(self.conn)
+        return KuzuSessionWrapper(self.conn, self._query_lock)
     def close(self):
         pass
 
 class KuzuSessionWrapper:
-    def __init__(self, conn):
+    def __init__(self, conn, query_lock: Optional[threading.RLock] = None):
         self.conn = conn
+        self._query_lock = query_lock or threading.RLock()
+        self._disabled_query_types = set()
+        self._logged_disabled_query_types = set()
+        self._state_lock = threading.Lock()
         self.uid_map = {
             'Function': ['name', 'path', 'line_number'],
             'Class': ['name', 'path', 'line_number'],
@@ -237,12 +271,99 @@ class KuzuSessionWrapper:
         if isinstance(v, set):
             return [KuzuSessionWrapper._sanitize_value(i) for i in v]
         if isinstance(v, list):
-            return [KuzuSessionWrapper._sanitize_value(i) for i in v]
+            sanitized = [KuzuSessionWrapper._sanitize_value(i) for i in v]
+
+            # Kuzu infers list-of-dict values as a struct vector. If rows in an
+            # UNWIND batch have different keys, referencing a missing row.field
+            # causes binder errors like "Invalid struct field name".
+            if sanitized and all(isinstance(i, dict) for i in sanitized):
+                all_keys = set()
+                for item in sanitized:
+                    all_keys.update(item.keys())
+                if all_keys:
+                    key_order = sorted(all_keys)
+                    normalized_rows = []
+                    seen_rows = set()
+                    for item in sanitized:
+                        row = {k: item.get(k) for k in key_order}
+                        # NULL values in MERGE key fields (especially line_number)
+                        # can cause repeated non-matching MERGEs. Normalize to a
+                        # sentinel for stable identity in Kuzu.
+                        for int_key in ("line_number", "function_line_number", "end_line"):
+                            if int_key in row and row[int_key] is None:
+                                row[int_key] = -1
+                        row_key = json.dumps(row, sort_keys=True, default=str)
+                        if row_key in seen_rows:
+                            continue
+                        seen_rows.add(row_key)
+                        normalized_rows.append(row)
+                    return normalized_rows
+
+            return sanitized
         if isinstance(v, dict):
             return {k: KuzuSessionWrapper._sanitize_value(val) for k, val in v.items()}
         return v
 
+    def _classify_query_type(self, query: str) -> str:
+        if "db.idx.fulltext.createNodeIndex" in query or "db.index.fulltext.queryNodes" in query:
+            return "fulltext"
+        if "MATCH (file:File)-[imp:IMPORTS]->(module:Module" in query:
+            return "module_deps"
+        if "INHERITS" in query or "IMPLEMENTS" in query:
+            return "inheritance_resolution"
+        if "CALLS" in query:
+            return "calls_resolution"
+        return "generic"
+
+    def _is_query_type_disabled(self, query_type: str) -> bool:
+        if query_type == "generic":
+            return False
+        with self._state_lock:
+            return query_type in self._disabled_query_types
+
+    def _log_query_type_skip_once(self, query_type: str) -> None:
+        if query_type == "generic":
+            return
+        with self._state_lock:
+            if query_type in self._logged_disabled_query_types:
+                return
+            self._logged_disabled_query_types.add(query_type)
+        warning_logger(f"Kuzu compatibility guard active: skipping '{query_type}' queries after prior incompatibility.")
+
+    def _should_fail_fast(self, query_type: str, error: Exception) -> bool:
+        err = str(error).lower()
+        if query_type == "fulltext":
+            return "parser exception" in err or "invalid input <call db." in err
+        if query_type == "module_deps":
+            return "variable file is not in scope" in err or "binder exception" in err
+        if query_type == "calls_resolution":
+            return (
+                "casting between node and node is not implemented" in err
+                or "bound by multiple node labels is not supported" in err
+            )
+        if query_type == "inheritance_resolution":
+            return "bound by multiple node labels is not supported" in err
+        return False
+
+    def _disable_query_type(self, query_type: str, error: Exception) -> None:
+        if query_type == "generic":
+            return
+        with self._state_lock:
+            self._disabled_query_types.add(query_type)
+            already_logged = query_type in self._logged_disabled_query_types
+            if not already_logged:
+                self._logged_disabled_query_types.add(query_type)
+        if not already_logged:
+            warning_logger(
+                f"Kuzu compatibility guard: disabling '{query_type}' queries for this run after error: {error}"
+            )
+
     def run(self, query, **parameters):
+        query_type = self._classify_query_type(query)
+        if self._is_query_type_disabled(query_type):
+            self._log_query_type_skip_once(query_type)
+            return KuzuResultWrapper(None)
+
         # 0. Sanitize parameters (convert tuples/sets → lists throughout)
         parameters = {k: self._sanitize_value(v) for k, v in parameters.items()}
         # 1. Translate Query
@@ -250,13 +371,53 @@ class KuzuSessionWrapper:
         translated_query, translated_params = self._translate_query(query, parameters)
         debug_log(f"Translated Query: {translated_query[:200]}")
         try:
-            result = self.conn.execute(translated_query, translated_params)
+            # Acquire the query lock before touching the connection.
+            # KùzuDB's Connection is not thread-safe; without this lock, concurrent
+            # calls from asyncio.to_thread tool handlers and the background indexing
+            # coroutine would race on the same conn.execute(), causing C++ crashes
+            # or silent graph corruption. RLock is used so the UNWIND fallback below
+            # can call self.run() recursively from the same thread without deadlocking.
+            with self._query_lock:
+                result = self.conn.execute(translated_query, translated_params)
             return KuzuResultWrapper(result)
         except Exception as e:
-            # Silence specific non-errors
+            if self._should_fail_fast(query_type, e):
+                self._disable_query_type(query_type, e)
+                return KuzuResultWrapper(None)
+
+            # Log non-fatal schema collisions at debug level instead of swallowing
+            # them silently. This preserves the "idempotent CREATE" behaviour while
+            # still emitting a traceable message for unexpected collisions.
             err_str = str(e).lower()
             if "already exists" in err_str:
+                debug_log(f"Kuzu idempotent collision (already exists) — query: {query[:120]}")
                 return KuzuResultWrapper(None)
+            
+            # Fallback for KuzuDB UNWIND bug (unordered_map::at)
+            if "unordered_map::at" in err_str and "UNWIND" in query:
+                unwind_m = re.search(r'UNWIND\s+\$(\w+)\s+AS\s+(\w+)', query)
+                if unwind_m:
+                    batch_param = unwind_m.group(1)
+                    row_var = unwind_m.group(2)
+                    batch_data = parameters.get(batch_param)
+                    if isinstance(batch_data, list):
+                        loop_query = re.sub(r'UNWIND\s+\$\w+\s+AS\s+\w+', '', query, count=1)
+                        # Find all row.prop usages and replace with $row_prop
+                        props_used = set(re.findall(rf'{row_var}\.(\w+)', loop_query))
+                        for p in props_used:
+                            loop_query = loop_query.replace(f"{row_var}.{p}", f"${row_var}_{p}")
+                        
+                        last_result = None
+                        for item in batch_data:
+                            loop_params = parameters.copy()
+                            loop_params.pop(batch_param, None)
+                            for p in props_used:
+                                loop_params[f"{row_var}_{p}"] = item.get(p)
+                            if "uid" in item:
+                                loop_params[f"{row_var}_uid"] = item["uid"]
+                            last_result = self.run(loop_query, **loop_params)
+                        return last_result or KuzuResultWrapper(None)
+
             error_logger(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             debug_log(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             raise
@@ -267,7 +428,7 @@ class KuzuSessionWrapper:
         # 0. Define Schema Map (Strict property filtering)
         SCHEMA_MAP = {
             'Repository': {'path', 'name', 'is_dependency'},
-            'File': {'path', 'name', 'relative_path', 'is_dependency'},
+            'File': {'path', 'name', 'relative_path', 'package_name', 'is_dependency'},
             'Directory': {'path', 'name'},
             'Module': {'name', 'lang', 'full_import_name'},
             'Function': {'uid', 'name', 'path', 'line_number', 'end_line', 'source', 'docstring', 'lang', 'cyclomatic_complexity', 'context', 'context_type', 'class_context', 'is_dependency', 'decorators', 'args'},
@@ -383,21 +544,27 @@ class KuzuSessionWrapper:
                                 if val is not None:
                                     uid_components.append(str(val))
                                 else:
-                                    all_ok = False
-                                    break
+                                    # Missing values are common in parser output for some
+                                    # languages. Use a deterministic placeholder component
+                                    # to keep UID generation stable and unique enough.
+                                    uid_components.append(f"__missing_{part}")
                             elif param_ref:
                                 val = parameters.get(param_ref.group(1))
                                 if val is not None:
                                     uid_components.append(str(val))
                                 else:
-                                    all_ok = False
-                                    break
+                                    uid_components.append(f"__missing_{part}")
                             else:
                                 all_ok = False
                                 break
 
                         if all_ok:
-                            item['uid'] = ''.join(uid_components)
+                            raw_uid = ''.join(uid_components)
+                            # Add a stable fingerprint of the row payload to avoid
+                            # collisions when key components are absent.
+                            row_payload = json.dumps(item, sort_keys=True, default=str)
+                            row_fingerprint = hashlib.sha1(row_payload.encode('utf-8')).hexdigest()[:16]
+                            item['uid'] = f"{raw_uid}|{row_fingerprint}"
                         else:
                             all_ok = False
                             break
@@ -408,6 +575,16 @@ class KuzuSessionWrapper:
                             '{' + props_str + f', uid: {row_var}.uid' + '}'
                         )
                         query = query.replace(old_block, new_block, 1)
+
+                        # Kuzu node tables are keyed by uid for these labels, so MERGE
+                        # should match on the primary key only. Matching on additional
+                        # non-PK fields can still lead to duplicate PK insert attempts.
+                        query = re.sub(
+                            rf"MERGE\s+\({re.escape(var_name)}:{re.escape(label_raw)}\s*\{{[^}}]*uid:\s*{re.escape(row_var)}\.uid[^}}]*\}}\)",
+                            f"MERGE ({var_name}:{label_raw} {{uid: {row_var}.uid}})",
+                            query,
+                            count=1,
+                        )
 
                 # 1.5c: Strip explicit SET clauses for properties not in the schema
                 # (e.g. SET m.alias = row.alias when Module has no 'alias' column)
@@ -478,6 +655,8 @@ class KuzuSessionWrapper:
                     
                     parameters[uid_param] = uid_val
 
+        query, parameters = self._rewrite_kuzu_compat_patterns(query, parameters)
+
         # 3. Escape keywords as labels
         labels_to_escape = ['Macro', 'Union', 'Property', 'CONTAINS', 'CALLS'] # Only critical keywords
         for label in labels_to_escape:
@@ -529,6 +708,110 @@ class KuzuSessionWrapper:
         # 5. Cleanup unused parameters (Kuzu is strict)
         used_params = set(re.findall(r'\$(\w+)', query))
         parameters = {k: v for k, v in parameters.items() if k in used_params}
+
+        return query, parameters
+
+    def _rewrite_kuzu_compat_patterns(self, query: str, parameters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Rewrite known Neo4j-only query patterns to Kuzu-compatible variants."""
+
+        # Kuzu does not support Falkor fulltext procedures.
+        if "CALL db.idx.fulltext.createNodeIndex" in query:
+            return "RETURN 1", {}
+
+        # Kuzu does not support Neo4j fulltext procedures. Rewrite to substring search.
+        if "CALL db.index.fulltext.queryNodes" in query:
+            plain_term = parameters.get("search_term", "")
+            if isinstance(plain_term, str) and plain_term.lower().startswith("name:"):
+                plain_term = plain_term[5:]
+            parameters = {**parameters, "search_term_plain": plain_term}
+            repo_filter = "AND node.path STARTS WITH $repo_path" if "$repo_path" in query else ""
+
+            if "MATCH (node)<-[:CONTAINS]-(f:File)" in query or "MATCH (node)<-[:`CONTAINS`]-(f:File)" in query:
+                rewritten = f"""
+                MATCH (node)
+                WHERE label(node) IN ['Function', 'Class', 'Variable'] {repo_filter}
+                  AND (
+                    (node.name IS NOT NULL AND toLower(node.name) CONTAINS toLower($search_term_plain)) OR
+                    (node.source IS NOT NULL AND toLower(node.source) CONTAINS toLower($search_term_plain)) OR
+                    (node.docstring IS NOT NULL AND toLower(node.docstring) CONTAINS toLower($search_term_plain))
+                  )
+                OPTIONAL MATCH (node)<-[:CONTAINS]-(f:File)
+                RETURN
+                    CASE
+                        WHEN label(node) = 'Function' THEN 'function'
+                        WHEN label(node) = 'Class' THEN 'class'
+                        ELSE 'variable'
+                    END as type,
+                    node.name as name,
+                    COALESCE(f.path, node.path) as path,
+                    node.line_number as line_number,
+                    node.source as source,
+                    node.docstring as docstring,
+                    node.is_dependency as is_dependency
+                ORDER BY node.is_dependency ASC, node.name
+                LIMIT 20
+                """
+                return rewritten, parameters
+
+            label = "Function" if "node:Function" in query else "Class" if "node:Class" in query else None
+            if label:
+                rewritten = f"""
+                MATCH (node:{label})
+                WHERE toLower(node.name) CONTAINS toLower($search_term_plain) {repo_filter}
+                RETURN node.name as name, node.path as path, node.line_number as line_number,
+                    node.source as source, node.docstring as docstring, node.is_dependency as is_dependency
+                ORDER BY node.is_dependency ASC, node.name
+                LIMIT 20
+                """
+                return rewritten, parameters
+
+        # Kuzu requires explicit carrying of bindings into OPTIONAL MATCH and
+        # alias-based ORDER BY after RETURN DISTINCT.
+        if (
+            "MATCH (file:File)-[imp:IMPORTS]->(module:Module" in query
+            and (
+                "OPTIONAL MATCH (repo:Repository)-[:CONTAINS]->(file)" in query
+                or "OPTIONAL MATCH (repo:Repository)-[:`CONTAINS`]->(file)" in query
+            )
+        ):
+            query = query.replace(
+                "OPTIONAL MATCH (repo:Repository)-[:CONTAINS]->(file)",
+                "WITH file, imp, module\n                OPTIONAL MATCH (repo:Repository)-[:CONTAINS]->(file)",
+            )
+            query = query.replace(
+                "OPTIONAL MATCH (repo:Repository)-[:`CONTAINS`]->(file)",
+                "WITH file, imp, module\n                OPTIONAL MATCH (repo:Repository)-[:`CONTAINS`]->(file)",
+            )
+            query = query.replace(
+                "ORDER BY file.is_dependency ASC, file.path",
+                "ORDER BY file_is_dependency ASC, importer_file_path",
+            )
+
+        if "ORDER BY other_module.name" in query and "other_module.name as imported_module" in query:
+            query = query.replace("ORDER BY other_module.name", "ORDER BY imported_module")
+
+        # Import-batch compatibility: ensure optional fields exist on all UNWIND
+        # rows and avoid writing unsupported Module.alias on Kuzu schema.
+        if (
+            "UNWIND $batch AS row" in query
+            and "MERGE (m:Module {name: row.name})" in query
+            and "row.full_import_name" in query
+        ):
+            batch = parameters.get("batch")
+            if isinstance(batch, list):
+                normalized_batch = []
+                for item in batch:
+                    if isinstance(item, dict):
+                        normalized = dict(item)
+                        normalized.setdefault("full_import_name", normalized.get("name"))
+                        normalized.setdefault("alias", "")
+                        normalized.setdefault("line_number", None)
+                        normalized_batch.append(normalized)
+                    else:
+                        normalized_batch.append(item)
+                parameters = {**parameters, "batch": normalized_batch}
+
+            query = query.replace("SET m.alias = row.alias,", "SET")
 
         return query, parameters
 

@@ -12,6 +12,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 import codegraphcontext.cli.main as cli_main
+import codegraphcontext.cli.cli_helpers as cli_helpers
 from codegraphcontext.cli.main import app, _load_credentials
 
 runner = CliRunner()
@@ -212,7 +213,6 @@ class _FakeCodeFinder:
 def kuzudb_env():
     env = {
         "DEFAULT_DATABASE": "kuzudb",
-        "DATABASE_TYPE": "kuzudb",
         "CGC_RUNTIME_DB_TYPE": "kuzudb",
     }
     with patch.dict(os.environ, env, clear=False):
@@ -286,6 +286,35 @@ def cli_test_stubs(monkeypatch, tmp_path):
     bundle_module.CGCBundle = _FakeCGCBundle
     monkeypatch.setitem(sys.modules, "codegraphcontext.core.cgc_bundle", bundle_module)
 
+    monkeypatch.setattr(cli_main, "_write_datasource_graph", lambda *_args, **_kwargs: None)
+
+    datasource_pkg = types.ModuleType("codegraphcontext.tools.datasources")
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources", datasource_pkg)
+
+    mysql_module = types.ModuleType("codegraphcontext.tools.datasources.mysql_ingester")
+    mysql_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "mysql-test"},
+        "tables": [{"name": "users"}],
+        "columns": [{"name": "id"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.mysql_ingester", mysql_module)
+
+    cassandra_module = types.ModuleType("codegraphcontext.tools.datasources.cassandra_ingester")
+    cassandra_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "cassandra-test"},
+        "tables": [{"name": "users"}],
+        "columns": [{"name": "id"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.cassandra_ingester", cassandra_module)
+
+    redis_module = types.ModuleType("codegraphcontext.tools.datasources.redis_ingester")
+    redis_module.ingest = lambda **_kwargs: {
+        "datasource": {"name": "redis-test"},
+        "tables": [{"name": "pattern:user:*"}],
+        "columns": [{"name": "key"}],
+    }
+    monkeypatch.setitem(sys.modules, "codegraphcontext.tools.datasources.redis_ingester", redis_module)
+
     return {
         "bundle_file": downloaded_bundle,
         "bundle_export": tmp_path / "exported.cgc",
@@ -314,6 +343,8 @@ def test_cli_inventory_grouped_from_source():
     assert inventory["registry"] == {"list", "search", "download", "request"}
     assert inventory["find"] == {"name", "pattern", "type", "variable", "content", "decorator", "argument"}
     assert inventory["analyze"] == {"calls", "callers", "chain", "deps", "tree", "complexity", "dead-code", "overrides", "variable"}
+    if "datasource" in inventory:
+        assert inventory["datasource"] == {"mysql", "cassandra", "redis"}
     if "context" in inventory:
         assert inventory["context"] == {"list", "create", "delete", "mode", "default"}
 
@@ -379,6 +410,7 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
         ["n"],
         ["export", bundle_export],
         ["load", bundle_file],
+        ["report"],
     ]
 
     source_inventory = _inventory_from_main_source()
@@ -390,6 +422,14 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs):
                 ["context", "delete", "ci-context"],
                 ["context", "mode", "single"],
                 ["context", "default", "ci-context"],
+            ]
+        )
+    if "datasource" in source_inventory:
+        command_matrix.extend(
+            [
+                ["datasource", "mysql", "--host", "localhost", "--user", "root", "--password", "pw", "--database", "demo"],
+                ["datasource", "cassandra", "--host", "localhost", "--keyspace", "demo"],
+                ["datasource", "redis", "--host", "localhost"],
             ]
         )
 
@@ -445,6 +485,62 @@ def test_find_content_falkordb_known_limitation_message(monkeypatch):
     assert "cgc find pattern" in result.output
 
 
+def test_db_flag_kuzudb_not_overwritten_by_context_database(monkeypatch):
+    class _Ctx:
+        mode = "named"
+        context_name = "test"
+        database = "neo4j"
+        db_path = None
+        cgcignore_path = None
+
+    class _FakeResult:
+        def single(self):
+            return {"repo_count": 0, "dep_count": 0}
+
+        def __iter__(self):
+            return iter([])
+
+    class _FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, *_args, **_kwargs):
+            return _FakeResult()
+
+    class _FakeDriver:
+        def session(self):
+            return _FakeSession()
+
+    class _FakeManager:
+        def get_driver(self):
+            return _FakeDriver()
+
+        def close_driver(self):
+            return None
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_helpers, "resolve_context", lambda *_args, **_kwargs: _Ctx())
+    monkeypatch.setattr(cli_helpers, "ensure_first_run_bootstrap", lambda *_args, **_kwargs: None)
+
+    def _fake_get_database_manager(*_args, **_kwargs):
+        # --db kuzudb must remain effective, even when context prefers neo4j.
+        assert os.environ.get("CGC_RUNTIME_DB_TYPE") == "kuzudb"
+        return _FakeManager()
+
+    monkeypatch.setattr(cli_helpers, "get_database_manager", _fake_get_database_manager)
+
+    # Use a clean environment so the command path is deterministic.
+    clean_env = {k: v for k, v in os.environ.items() if k not in {"CGC_RUNTIME_DB_TYPE", "DEFAULT_DATABASE", "DATABASE_TYPE"}}
+    with patch.dict(os.environ, clean_env, clear=True):
+        result = runner.invoke(app, ["--db", "kuzudb", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Database Connection Error" not in result.output
+
+
 class TestNeo4jDatabaseNameCLI:
     """Integration tests for NEO4J_DATABASE display in CLI commands."""
 
@@ -473,9 +569,8 @@ class TestNeo4jDatabaseNameCLI:
             "bolt://localhost:7687", "neo4j", "password", database="mydb"
         )
 
-    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_displays_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
+    def test_load_credentials_displays_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
         """Test _load_credentials prints database name when NEO4J_DATABASE is set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -491,7 +586,6 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
-                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -506,11 +600,13 @@ class TestNeo4jDatabaseNameCLI:
                 _load_credentials()
 
             printed = output.getvalue()
-            assert "Using database: Neo4j (database: mydb)" in printed
+            lowered = printed.lower()
+            assert "using database: neo4j" in lowered
+            assert "database: mydb" in lowered
+            assert "source:" in lowered
 
-    @patch("codegraphcontext.cli.main.find_dotenv", return_value=None)
     @patch("codegraphcontext.cli.main.config_manager")
-    def test_load_credentials_no_database_name(self, mock_config_mgr, _mock_find_dotenv, monkeypatch, tmp_path):
+    def test_load_credentials_no_database_name(self, mock_config_mgr, monkeypatch, tmp_path):
         """Test _load_credentials prints Neo4j without database when NEO4J_DATABASE is not set."""
         mock_config_mgr.ensure_config_dir.return_value = None
 
@@ -525,7 +621,6 @@ class TestNeo4jDatabaseNameCLI:
             k: v for k, v in os.environ.items()
             if k not in {
                 "DEFAULT_DATABASE",
-                "DATABASE_TYPE",
                 "CGC_RUNTIME_DB_TYPE",
                 "NEO4J_URI",
                 "NEO4J_USERNAME",
@@ -540,12 +635,13 @@ class TestNeo4jDatabaseNameCLI:
                 _load_credentials()
 
             printed = output.getvalue()
-            assert "Using database: Neo4j" in printed
-            assert "(database:" not in printed
+            lowered = printed.lower()
+            assert "using database: neo4j" in lowered
+            assert "source:" in lowered
+            assert "(database:" not in lowered
 
 
 def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli_main, "find_dotenv", lambda **_kwargs: None)
     monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda *_args, **_kwargs: None)
 
     monkeypatch.chdir(tmp_path)
@@ -553,7 +649,6 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
         k: v for k, v in os.environ.items()
         if k not in {
             "DEFAULT_DATABASE",
-            "DATABASE_TYPE",
             "CGC_RUNTIME_DB_TYPE",
             "NEO4J_URI",
             "NEO4J_USERNAME",
@@ -567,5 +662,7 @@ def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
         with patch("codegraphcontext.cli.main.console", Console(file=output, force_terminal=False)):
             _load_credentials()
 
-        assert "Using database: KùzuDB" in output.getvalue()
+        lowered = output.getvalue().lower()
+        assert "using database: kuzudb" in lowered
+        assert "source:" in lowered
 

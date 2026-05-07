@@ -110,6 +110,10 @@ class CSharpTreeSitterParser:
 
             tree = self.parser.parse(bytes(source_code, "utf8"))
 
+            # Extract namespace declaration for package_name (e.g. "com.ea.nucleus.billing")
+            namespace_match = re.search(r'\bnamespace\s+([\w.]+)', source_code)
+            package_name = namespace_match.group(1) if namespace_match else None
+
             parsed_functions = []
             parsed_classes = []
             parsed_interfaces = []
@@ -156,6 +160,7 @@ class CSharpTreeSitterParser:
                 "function_calls": parsed_calls,
                 "is_dependency": is_dependency,
                 "lang": self.language_name,
+                "package_name": package_name,
             }
 
         except Exception as e:
