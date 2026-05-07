@@ -718,7 +718,7 @@ class CodeFinder:
             query = f"""
                 MATCH p = (f:Function)-[:CALLS*]->()
                 WITH f as f, p as p, nodes(p) as path_nodes
-                WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes) - 1] as target
+                WITH f as f, path_nodes as path_nodes, path_nodes[size(path_nodes)-1] as target
                 WHERE target.name = $function_name {path_filter} {repo_filter}
                 RETURN DISTINCT f.name AS caller_name, f.path AS caller_file_path, f.line_number AS caller_line_number, f.is_dependency AS caller_is_dependency
                 ORDER BY caller_is_dependency ASC, caller_file_path, caller_line_number
@@ -737,7 +737,7 @@ class CodeFinder:
                 MATCH (caller:Function {{name: $function_name{path_filter}}})
                 MATCH p = (caller)-[:CALLS*]->()
                 WITH p as p, nodes(p) as path_nodes
-                WITH path_nodes[size(path_nodes) - 1] as f
+                WITH path_nodes[size(path_nodes)-1] as f
                 {repo_filter}
                 RETURN DISTINCT f.name AS callee_name, f.path AS callee_file_path, f.line_number AS callee_line_number, f.is_dependency AS callee_is_dependency
                 ORDER BY callee_is_dependency ASC, callee_file_path, callee_line_number

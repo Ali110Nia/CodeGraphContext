@@ -109,7 +109,7 @@ def mcp_setup():
     Sets up CodeGraphContext integration with your IDE or CLI tool:
     - VS Code, Cursor, Windsurf
     - Claude Desktop, Gemini CLI
-    - Cline, RooCode, Amazon Q Developer
+    - Cline, RooCode, Amazon Q Developer, Goose
     - OpenCode (prints stdio config + link to vendor docs)
     
     Works with FalkorDB by default (no database setup needed).
