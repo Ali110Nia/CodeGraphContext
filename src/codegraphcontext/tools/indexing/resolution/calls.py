@@ -86,6 +86,8 @@ def resolve_function_call(
 
     # ── Tier 5/6/7: lookup by call-site name (no inferred type) ───────────────
     if not resolved_path:
+        if lookup_name in local_imports:
+            resolved_called_name = local_imports[lookup_name]
         possible_paths = imports_map.get(lookup_name, [])
         if not possible_paths and lookup_name in local_imports:
             imported_name = local_imports[lookup_name]
@@ -93,8 +95,7 @@ def resolve_function_call(
             if alias_paths:
                 possible_paths = alias_paths
                 lookup_name = imported_name
-                if called_name == base_obj or called_name == call["name"]:
-                    resolved_called_name = imported_name
+                resolved_called_name = imported_name
         if len(possible_paths) == 1:
             # Tier 5: globally unique short name — high confidence
             resolved_path = possible_paths[0]

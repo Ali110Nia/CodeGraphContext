@@ -222,18 +222,18 @@ class KuzuDBManager:
             return False, "KùzuDB is not installed. Run 'pip install real_ladybug'"
 
 class KuzuDriverWrapper:
-    def __init__(self, conn, query_lock: threading.RLock):
+    def __init__(self, conn, query_lock: Optional[threading.RLock] = None):
         self.conn = conn
-        self._query_lock = query_lock
+        self._query_lock = query_lock or threading.RLock()
     def session(self):
         return KuzuSessionWrapper(self.conn, self._query_lock)
     def close(self):
         pass
 
 class KuzuSessionWrapper:
-    def __init__(self, conn, query_lock: threading.RLock):
+    def __init__(self, conn, query_lock: Optional[threading.RLock] = None):
         self.conn = conn
-        self._query_lock = query_lock
+        self._query_lock = query_lock or threading.RLock()
         self._disabled_query_types = set()
         self._logged_disabled_query_types = set()
         self._state_lock = threading.Lock()
@@ -380,9 +380,6 @@ class KuzuSessionWrapper:
                 result = self.conn.execute(translated_query, translated_params)
             return KuzuResultWrapper(result)
         except Exception as e:
-            # Log non-fatal schema collisions at debug level instead of swallowing
-            # them silently. This preserves the "idempotent CREATE" behaviour while
-            # still emitting a traceable message for unexpected collisions.
             if self._should_fail_fast(query_type, e):
                 self._disable_query_type(query_type, e)
                 return KuzuResultWrapper(None)
@@ -806,7 +803,7 @@ class KuzuSessionWrapper:
                     if isinstance(item, dict):
                         normalized = dict(item)
                         normalized.setdefault("full_import_name", normalized.get("name"))
-                        normalized.setdefault("alias", None)
+                        normalized.setdefault("alias", "")
                         normalized.setdefault("line_number", None)
                         normalized_batch.append(normalized)
                     else:

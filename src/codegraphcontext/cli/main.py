@@ -1303,7 +1303,7 @@ def unwatch(
     _load_credentials()
     unwatch_helper(path)
 
-@app.command()
+@app.command("watching")
 def watching(
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
