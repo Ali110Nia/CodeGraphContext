@@ -1043,6 +1043,50 @@ class GraphWriter:
                 written += len(op_edges[i : i + batch_size])
         info_logger(f"[MYBATIS] Written {written} READS/WRITES MyBatis edges")
 
+    def write_spring_data_repo_links(self, orm_batch: List[Dict[str, Any]]) -> None:
+        """Write READS/WRITES edges for Spring Data repository derived-query methods.
+
+        Each record must have kind='spring_data_method' and:
+            entity_class, method_name, method_path, operation, line_number
+
+        Uses a two-hop lookup: Function → (entity_class Class)-[:MAPS_TO]→ DbTable
+        so no table name is required at parse time.
+        """
+        records = [r for r in orm_batch if r.get("kind") == "spring_data_method"]
+        if not records:
+            return
+
+        edges = [
+            {
+                "method_name": r["method_name"],
+                "method_path": r["method_path"],
+                "entity_class": r["entity_class"],
+                "operation": r.get("operation", "READS"),
+                "line_number": r.get("line_number", 0),
+            }
+            for r in records
+        ]
+
+        batch_size = 500
+        written = 0
+        for op in ("READS", "WRITES"):
+            op_edges = [e for e in edges if e["operation"] == op]
+            if not op_edges:
+                continue
+            for i in range(0, len(op_edges), batch_size):
+                with self.driver.session() as session:
+                    session.run(
+                        f"""
+                        UNWIND $batch AS q
+                        MATCH (fn:Function {{name: q.method_name, path: q.method_path}})
+                        MATCH (entity:Class {{name: q.entity_class}})-[:MAPS_TO]->(tbl:DbTable)
+                        MERGE (fn)-[:{op} {{line_number: q.line_number, source: 'spring_data'}}]->(tbl)
+                        """,
+                        batch=op_edges[i : i + batch_size],
+                    )
+                written += len(op_edges[i : i + batch_size])
+        info_logger(f"[SPRING_DATA] Written {written} READS/WRITES derived-query edges")
+
     def delete_repository_from_graph(self, repo_path: str) -> bool:
         repo_path_str = repo_path
         path_prefix = repo_path_str + "/"

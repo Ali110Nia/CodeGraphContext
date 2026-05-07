@@ -361,3 +361,77 @@ class TestOrmMappingExtraction:
         assert "orm_mappings" in data
         assert isinstance(data["orm_mappings"], list)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Spring Data repository derived-query method detection
+# ──────────────────────────────────────────────────────────────────────────────
+
+SPRING_DATA_REPO_SRC = """\
+package com.example.db;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.repository.CrudRepository;
+import java.util.List;
+import java.util.Optional;
+
+public interface UserAuthenticationRepository extends JpaRepository<UserAuthentication, Long> {
+
+    Optional<UserAuthentication> findByUserId(String userId);
+
+    List<UserAuthentication> findByEmailAndStatus(String email, String status);
+
+    long countByStatus(String status);
+
+    boolean existsByUserId(String userId);
+
+    void deleteByUserId(String userId);
+
+    List<UserAuthentication> findAllByCreatedAtAfter(long timestamp);
+}
+
+public interface OrderRepository extends CrudRepository<Order, Long> {
+
+    List<Order> findByCustomerId(String customerId);
+
+    void deleteById(Long id);
+}
+"""
+
+
+class TestSpringDataRepoDetection:
+    def test_spring_data_reads_emitted(self, parser):
+        data = _write_and_parse(parser, SPRING_DATA_REPO_SRC)
+        orm = data.get("orm_mappings", [])
+        spring_reads = [r for r in orm if r.get("kind") == "spring_data_method" and r.get("operation") == "READS"]
+        assert len(spring_reads) >= 4, f"Expected >=4 READS, got {len(spring_reads)}: {spring_reads}"
+
+    def test_spring_data_writes_emitted(self, parser):
+        data = _write_and_parse(parser, SPRING_DATA_REPO_SRC)
+        orm = data.get("orm_mappings", [])
+        spring_writes = [r for r in orm if r.get("kind") == "spring_data_method" and r.get("operation") == "WRITES"]
+        method_names = [r["method_name"] for r in spring_writes]
+        assert "deleteByUserId" in method_names, f"Expected deleteByUserId in WRITES, got: {method_names}"
+
+    def test_spring_data_entity_class_extracted(self, parser):
+        data = _write_and_parse(parser, SPRING_DATA_REPO_SRC)
+        orm = data.get("orm_mappings", [])
+        spring = [r for r in orm if r.get("kind") == "spring_data_method"]
+        user_auth_methods = [r for r in spring if r.get("entity_class") == "UserAuthentication"]
+        assert len(user_auth_methods) >= 1, f"Expected entity_class=UserAuthentication, got: {[r.get('entity_class') for r in spring]}"
+
+    def test_spring_data_crud_repo_detected(self, parser):
+        data = _write_and_parse(parser, SPRING_DATA_REPO_SRC)
+        orm = data.get("orm_mappings", [])
+        order_methods = [r for r in orm if r.get("kind") == "spring_data_method" and r.get("entity_class") == "Order"]
+        assert len(order_methods) >= 1, f"Expected Order entity methods, got: {order_methods}"
+
+    def test_spring_data_class_name_set(self, parser):
+        data = _write_and_parse(parser, SPRING_DATA_REPO_SRC)
+        orm = data.get("orm_mappings", [])
+        spring = [r for r in orm if r.get("kind") == "spring_data_method"]
+        for r in spring:
+            assert r.get("class_name"), f"class_name missing on {r}"
+            assert r.get("method_name"), f"method_name missing on {r}"
+            assert r.get("method_path"), f"method_path missing on {r}"
+            assert r.get("entity_class"), f"entity_class missing on {r}"
+

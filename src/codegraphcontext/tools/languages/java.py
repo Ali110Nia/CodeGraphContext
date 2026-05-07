@@ -48,6 +48,32 @@ _SQL_QUERY_ANNOTATIONS = frozenset({"Query", "Select", "Insert", "Update", "Dele
 # Determines READ vs WRITE from a SQL/CQL string
 _WRITE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "REPLACE")
 
+# Spring Data repository base interfaces — presence means the interface is a repo
+_SPRING_DATA_REPO_BASES = frozenset({
+    "JpaRepository", "CrudRepository", "PagingAndSortingRepository",
+    "ListCrudRepository", "ListPagingAndSortingRepository",
+    "MongoRepository", "ReactiveMongoRepository",
+    "CassandraRepository", "ReactiveCassandraRepository",
+    "R2dbcRepository", "CoroutineCrudRepository",
+})
+
+# Spring Data derived-query method prefixes → READS
+_SPRING_DATA_READS_PREFIXES = (
+    "findby", "findall", "findfirst", "findtop", "finddistinct",
+    "readby", "getby", "queryby", "searchby",
+    "countby", "existsby",
+    "find", "read", "get", "count", "exists", "fetch", "load", "retrieve",
+)
+
+# Spring Data derived-query method prefixes → WRITES
+_SPRING_DATA_WRITES_PREFIXES = (
+    "saveall", "saveandflushthem", "saveandflush", "saveallandflush",
+    "save", "insertall", "insert", "updateall", "update",
+    "deleteall", "deletebyid", "deleteallinbatch", "deleteinbatch",
+    "deleteby", "delete", "removeall", "removeby", "remove",
+    "flush", "create",
+)
+
 
 def _parse_sql_tables(sql: str) -> List[str]:
     """Extract table names from a SQL/CQL string without a full parser.
@@ -411,6 +437,27 @@ class JavaTreeSitterParser:
                                     if child.type in ('type_identifier', 'generic_type', 'scoped_type_identifier'):
                                         bases.append(self._get_node_text(child))
 
+                        # Look for extends_interfaces (interface extends another interface)
+                        # Tree-sitter uses a different field for interface_declaration.
+                        # Scan by node type since child_by_field_name may not expose it.
+                        extends_ifaces_node = (
+                            node.child_by_field_name('extends_interfaces')
+                            or next(
+                                (c for c in node.children if c.type == 'extends_interfaces'),
+                                None,
+                            )
+                        )
+                        if extends_ifaces_node:
+                            iface_list = next(
+                                (c for c in extends_ifaces_node.children
+                                 if c.type in ('type_list', 'interface_type_list')),
+                                None,
+                            )
+                            candidates = iface_list.children if iface_list else extends_ifaces_node.children
+                            for child in candidates:
+                                if child.type in ('type_identifier', 'generic_type', 'scoped_type_identifier'):
+                                    bases.append(self._get_node_text(child))
+
                         class_data = {
                             "name": class_name,
                             "line_number": start_line,
@@ -660,6 +707,62 @@ class JavaTreeSitterParser:
                 _walk(child)
 
         _walk(tree.root_node)
+
+        # ── Spring Data repository derived-query methods ───────────────────
+        # For interfaces extending JpaRepository<Entity, ID> etc., emit
+        # READS/WRITES records that the writer resolves via MAPS_TO hop.
+        for cls in parsed_classes:
+            if str(path) != cls.get("path"):
+                continue
+            bases = cls.get("bases", [])
+            entity_class: Optional[str] = None
+            for base_str in bases:
+                for repo_base in _SPRING_DATA_REPO_BASES:
+                    if repo_base in base_str:
+                        # Extract first generic arg: JpaRepository<UserAuth, Long> → UserAuth
+                        m = re.search(r'<\s*([A-Za-z][A-Za-z0-9_]*)', base_str)
+                        if m:
+                            entity_class = m.group(1)
+                        break
+                if entity_class:
+                    break
+
+            if not entity_class:
+                continue
+
+            cls_start = cls["line_number"]
+            cls_end = cls.get("end_line", 999999)
+
+            for fn in parsed_functions:
+                if fn.get("path") != str(path):
+                    continue
+                fn_line = fn.get("line_number", 0)
+                if not (cls_start <= fn_line <= cls_end):
+                    continue
+
+                method_name = fn.get("name", "")
+                if not method_name:
+                    continue
+
+                mn_lower = method_name.lower()
+                # Check WRITES first (longer prefixes must come first — handled by tuple order)
+                if any(mn_lower.startswith(p) for p in _SPRING_DATA_WRITES_PREFIXES):
+                    operation = "WRITES"
+                elif any(mn_lower.startswith(p) for p in _SPRING_DATA_READS_PREFIXES):
+                    operation = "READS"
+                else:
+                    continue
+
+                mappings.append({
+                    "kind": "spring_data_method",
+                    "entity_class": entity_class,
+                    "method_name": method_name,
+                    "class_name": cls["name"],
+                    "method_path": str(path),
+                    "operation": operation,
+                    "line_number": fn_line,
+                })
+
         return mappings
 
     def _extract_spring_injections(

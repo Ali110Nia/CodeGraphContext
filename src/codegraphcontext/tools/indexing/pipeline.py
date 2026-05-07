@@ -142,6 +142,7 @@ async def run_tree_sitter_index_async(
         )
         writer.write_orm_mapping_links(orm_batch)
         writer.write_query_links(orm_batch)
+        writer.write_spring_data_repo_links(orm_batch)
 
     # ── MyBatis XML mapper READS / WRITES edges ───────────────────────────────
     if not is_dependency and path.is_dir():
