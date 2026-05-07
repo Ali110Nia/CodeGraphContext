@@ -165,14 +165,14 @@ class GoTreeSitterParser:
 
     def parse(self, path: Path, is_dependency: bool = False, index_source: bool = False) -> Dict:
         """Parses a file and returns its structure in a standardized dictionary format."""
-        # This method orchestrates the parsing of a single file.
-        # It calls specialized `_find_*` methods for each language construct.
-        # The returned dictionary should map a specific key (e.g., 'functions', 'interfaces')
-        # to a list of dictionaries, where each dictionary represents a single code construct.
-        # The GraphBuilder will then use these keys to create nodes with corresponding labels.
         self.index_source = index_source
         with open(path, "r", encoding="utf-8") as f:
             source_code = f.read()
+
+        # Extract Go package declaration for package_name field on File nodes
+        import re as _re
+        pkg_match = _re.search(r'^\s*package\s+(\w+)', source_code, _re.MULTILINE)
+        package_name = pkg_match.group(1) if pkg_match else None
 
         tree = self.parser.parse(bytes(source_code, "utf8"))
         root_node = tree.root_node
@@ -194,6 +194,7 @@ class GoTreeSitterParser:
             "function_calls": function_calls,
             "is_dependency": is_dependency,
             "lang": self.language_name,
+            "package_name": package_name,
         }
 
     def _find_functions(self, root_node):

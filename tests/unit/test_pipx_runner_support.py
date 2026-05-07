@@ -202,7 +202,6 @@ class TestTC04_KuzuSetupBlock:
 # ---------------------------------------------------------------------------
 
 class TestTC05_ReadmeDocumentation:
-
     # Resolve repository root robustly across local runs and CI workspace layouts.
     # In GitHub Actions, checkout paths may be nested (e.g. /work/repo/repo).
     README_PATH = next(

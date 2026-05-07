@@ -87,12 +87,14 @@ class GraphWriter:
             session.run(
                 """
                 MERGE (f:File {path: $path})
-                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency
+                SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency,
+                    f.package_name = $package_name
             """,
                 path=file_path_str,
                 name=file_name,
                 relative_path=relative_path,
                 is_dependency=is_dependency,
+                package_name=file_data.get("package_name"),
             )
 
             file_path_obj = Path(file_path_str)
@@ -219,14 +221,14 @@ class GraphWriter:
                                 b[k] = bool(v) if v is not None else False
                             else:
                                 if v is None:
-                                    b[k] = ""
+                                    b.pop(k, None)
                                 elif isinstance(v, list):
                                     b[k] = _json.dumps(v)
                                 elif not isinstance(v, str):
                                     b[k] = str(v)
 
                     key_order = sorted(all_keys)
-                    batch[:] = [{k: b[k] for k in key_order} for b in batch]
+                    batch[:] = [{k: b[k] for k in key_order if k in b} for b in batch]
 
                 session.run(
                     f"""
@@ -449,37 +451,49 @@ class GraphWriter:
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         q_fn_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         q_cls_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         q_cls_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         q_file_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         q_file_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[c:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            SET c.confidence = row.confidence, c.resolution_tier = row.resolution_tier,
+                c.confidence_label = row.confidence_label
         """
         groups: List[Tuple[str, List[Dict], str]] = [
             ("fn→fn", fn_to_fn, q_fn_to_fn),
@@ -588,7 +602,8 @@ class GraphWriter:
                     UNWIND $batch AS row
                     MATCH (child:Class {name: row.child_name, path: row.path})
                     MATCH (parent:Class {name: row.parent_name, path: row.resolved_parent_file_path})
-                    MERGE (child)-[:INHERITS]->(parent)
+                    MERGE (child)-[r:INHERITS]->(parent)
+                    SET r.confidence_label = coalesce(row.confidence_label, 'EXTRACTED')
                 """,
                     batch=batch,
                 )
@@ -654,8 +669,426 @@ class GraphWriter:
                     path=p,
                 )
 
+    # ── Spring semantic edges (#887) ───────────────────────────────────────────
+
+    def write_spring_inject_links(self, inject_batch: List[Dict[str, Any]]) -> None:
+        """Create INJECTS edges: injector Class -> injected Class (via @Autowired / @Inject)."""
+        if not inject_batch:
+            return
+        info_logger(f"[SPRING] Writing {len(inject_batch)} INJECTS edges...")
+        batch_size = 500
+        with self.driver.session() as session:
+            for i in range(0, len(inject_batch), batch_size):
+                batch = inject_batch[i : i + batch_size]
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (injector:Class {name: row.injector_class, path: row.injector_path})
+                    MATCH (injected:Class {name: row.injected_class})
+                    MERGE (injector)-[r:INJECTS]->(injected)
+                    SET r.field_name = row.field_name,
+                        r.inject_line = row.inject_line,
+                        r.confidence_label = 'EXTRACTED'
+                    """,
+                    batch=batch,
+                )
+        info_logger(f"[SPRING] INJECTS edges written.")
+
+    def write_spring_endpoint_properties(self, endpoint_batch: List[Dict[str, Any]]) -> None:
+        """Set http_method / http_path / transactional properties on Function nodes."""
+        if not endpoint_batch:
+            return
+        info_logger(f"[SPRING] Updating {len(endpoint_batch)} endpoint function properties...")
+        batch_size = 500
+        with self.driver.session() as session:
+            for i in range(0, len(endpoint_batch), batch_size):
+                batch = endpoint_batch[i : i + batch_size]
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (fn:Function {name: row.func_name, path: row.path, line_number: row.line_number})
+                    SET fn.http_method = row.http_method,
+                        fn.http_path = row.http_path
+                    """,
+                    batch=batch,
+                )
+        info_logger("[SPRING] Endpoint properties updated.")
+
+    # ── Maven / Gradle build graph (#888) ─────────────────────────────────────
+
+    def write_maven_build_graph(self, build_data: Dict[str, Any], repo_path_str: str) -> None:
+        """Write MavenModule nodes, CHILD_MODULE, MODULE_DEPENDS_ON, USES_LIBRARY edges."""
+        if not build_data:
+            return
+        modules = build_data.get("modules", [])
+        external_libs = build_data.get("external_libs", [])
+        inter_module_deps = build_data.get("inter_module_deps", [])
+        child_relations = build_data.get("child_relations", [])
+
+        if not modules:
+            return
+
+        info_logger(f"[MAVEN] Writing {len(modules)} modules, "
+                    f"{len(inter_module_deps)} inter-module deps, "
+                    f"{len(external_libs)} external libs...")
+
+        batch_size = 200
+        with self.driver.session() as session:
+            # MavenModule nodes
+            for i in range(0, len(modules), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MERGE (m:MavenModule {group_id: row.group_id, artifact_id: row.artifact_id})
+                    SET m.version = row.version,
+                        m.packaging = row.packaging,
+                        m.pom_path = row.pom_path,
+                        m.repo_path = $repo_path
+                    """,
+                    batch=modules[i : i + batch_size],
+                    repo_path=repo_path_str,
+                )
+            # CHILD_MODULE edges
+            for i in range(0, len(child_relations), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (parent:MavenModule {artifact_id: row.parent_artifact_id})
+                    MATCH (child:MavenModule {artifact_id: row.child_artifact_id})
+                    MERGE (parent)-[:CHILD_MODULE]->(child)
+                    """,
+                    batch=child_relations[i : i + batch_size],
+                )
+            # MODULE_DEPENDS_ON edges (inter-module)
+            for i in range(0, len(inter_module_deps), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (src:MavenModule {artifact_id: row.src_artifact_id})
+                    MATCH (tgt:MavenModule {artifact_id: row.tgt_artifact_id})
+                    MERGE (src)-[r:MODULE_DEPENDS_ON]->(tgt)
+                    SET r.scope = row.scope
+                    """,
+                    batch=inter_module_deps[i : i + batch_size],
+                )
+            # ExternalLibrary nodes + USES_LIBRARY edges
+            for i in range(0, len(external_libs), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MERGE (lib:ExternalLibrary {group_id: row.group_id, artifact_id: row.artifact_id})
+                    SET lib.version = row.version
+                    WITH lib, row
+                    MATCH (src:MavenModule {artifact_id: row.src_artifact_id})
+                    MERGE (src)-[r:USES_LIBRARY]->(lib)
+                    SET r.scope = row.scope
+                    """,
+                    batch=external_libs[i : i + batch_size],
+                )
+
+        info_logger("[MAVEN] Build graph written.")
+
+    def write_gradle_build_graph(self, build_data: Dict[str, Any], repo_path_str: str) -> None:
+        """Write GradleModule nodes and MODULE_DEPENDS_ON / USES_LIBRARY edges."""
+        if not build_data:
+            return
+        modules = build_data.get("modules", [])
+        inter_module_deps = build_data.get("inter_module_deps", [])
+        external_libs = build_data.get("external_libs", [])
+
+        if not modules:
+            return
+
+        info_logger(f"[GRADLE] Writing {len(modules)} modules, "
+                    f"{len(inter_module_deps)} inter-module deps, "
+                    f"{len(external_libs)} external libs...")
+
+        batch_size = 200
+        with self.driver.session() as session:
+            for i in range(0, len(modules), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MERGE (m:GradleModule {name: row.name})
+                    SET m.build_file = row.build_file, m.repo_path = $repo_path
+                    """,
+                    batch=modules[i : i + batch_size],
+                    repo_path=repo_path_str,
+                )
+            for i in range(0, len(inter_module_deps), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (src:GradleModule {name: row.src_name})
+                    MATCH (tgt:GradleModule {name: row.tgt_name})
+                    MERGE (src)-[r:MODULE_DEPENDS_ON]->(tgt)
+                    SET r.configuration = row.configuration
+                    """,
+                    batch=inter_module_deps[i : i + batch_size],
+                )
+            for i in range(0, len(external_libs), batch_size):
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MERGE (lib:ExternalLibrary {group_id: row.group_id, artifact_id: row.artifact_id})
+                    SET lib.version = row.version
+                    WITH lib, row
+                    MATCH (src:GradleModule {name: row.src_name})
+                    MERGE (src)-[r:USES_LIBRARY]->(lib)
+                    SET r.configuration = row.configuration
+                    """,
+                    batch=external_libs[i : i + batch_size],
+                )
+
+        info_logger("[GRADLE] Build graph written.")
+
+    # ── Datasource architecture graph (#843 scoped) ──────────────────────────
+
+    def write_datasource_graph(self, ingested: Dict[str, Any]) -> None:
+        """Write Datasource / DbTable / DbColumn / RedisKeyPattern nodes and edges.
+
+        Accepts the dict returned by mysql_ingester.ingest(), cassandra_ingester.ingest(),
+        or redis_ingester.ingest().
+        """
+        ds = ingested.get("datasource", {})
+        if not ds:
+            return
+        ds_name = ds["name"]
+        ds_kind = ds.get("kind", "unknown")
+
+        with self.driver.session() as session:
+            session.run(
+                """
+                MERGE (d:Datasource {name: $name})
+                SET d.kind = $kind, d.host = $host, d.env = $env
+                """,
+                name=ds_name,
+                kind=ds_kind,
+                host=ds.get("host", ""),
+                env=ds.get("env", ""),
+            )
+        info_logger(f"[DATASOURCE] Written Datasource node: {ds_name} ({ds_kind})")
+
+        # ── MySQL / Cassandra tables + columns ────────────────────────────
+        tables = ingested.get("tables", [])
+        batch_size = 500
+
+        for i in range(0, len(tables), batch_size):
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    UNWIND $batch AS t
+                    MERGE (tbl:DbTable {fqn: t.fqn})
+                    SET tbl.name = t.name,
+                        tbl.datasource_name = t.datasource_name,
+                        tbl.table_type = coalesce(t.table_type, ''),
+                        tbl.comment = coalesce(t.comment, '')
+                    WITH tbl, t
+                    MATCH (d:Datasource {name: t.datasource_name})
+                    MERGE (tbl)-[:STORED_IN]->(d)
+                    """,
+                    batch=tables[i : i + batch_size],
+                )
+        if tables:
+            info_logger(f"[DATASOURCE] Written {len(tables)} DbTable nodes for {ds_name}")
+
+        columns = ingested.get("columns", [])
+        for i in range(0, len(columns), batch_size):
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    UNWIND $batch AS c
+                    MERGE (col:DbColumn {name: c.name, table_fqn: c.table_fqn})
+                    SET col.type = c.type,
+                        col.nullable = c.nullable,
+                        col.datasource_name = c.datasource_name,
+                        col.is_primary_key = coalesce(c.is_primary_key, false)
+                    WITH col, c
+                    MATCH (tbl:DbTable {fqn: c.table_fqn})
+                    MERGE (tbl)-[:HAS_COLUMN]->(col)
+                    """,
+                    batch=columns[i : i + batch_size],
+                )
+        if columns:
+            info_logger(f"[DATASOURCE] Written {len(columns)} DbColumn nodes for {ds_name}")
+
+        # ── Redis key patterns ────────────────────────────────────────────
+        key_patterns = ingested.get("key_patterns", [])
+        for i in range(0, len(key_patterns), batch_size):
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    UNWIND $batch AS kp
+                    MERGE (k:RedisKeyPattern {pattern: kp.pattern, datasource_name: kp.datasource_name})
+                    SET k.key_type = kp.key_type,
+                        k.example_key = kp.example_key,
+                        k.count = kp.count
+                    WITH k, kp
+                    MATCH (d:Datasource {name: kp.datasource_name})
+                    MERGE (k)-[:STORED_IN]->(d)
+                    """,
+                    batch=key_patterns[i : i + batch_size],
+                )
+        if key_patterns:
+            info_logger(f"[DATASOURCE] Written {len(key_patterns)} RedisKeyPattern nodes for {ds_name}")
+
+    def write_orm_mapping_links(self, orm_batch: List[Dict[str, Any]]) -> None:
+        """Write MAPS_TO edges from Class → DbTable (JPA, Cassandra, Redis) for #843.
+
+        Each record in orm_batch must have:
+            kind: "class_table"
+            class_name, class_path, orm_table, datastore, line_number
+        """
+        class_table = [r for r in orm_batch if r.get("kind") == "class_table"]
+        if not class_table:
+            return
+
+        batch_size = 500
+        for i in range(0, len(class_table), batch_size):
+            with self.driver.session() as session:
+                session.run(
+                    """
+                    UNWIND $batch AS m
+                    MATCH (c:Class {name: m.class_name, path: m.class_path})
+                    MERGE (tbl:DbTable {name: m.orm_table})
+                    ON CREATE SET tbl.fqn = m.orm_table, tbl.datasource_name = m.datastore
+                    MERGE (c)-[:MAPS_TO {datastore: m.datastore, line_number: m.line_number}]->(tbl)
+                    """,
+                    batch=class_table[i : i + batch_size],
+                )
+        info_logger(f"[ORM] Written {len(class_table)} MAPS_TO edges")
+
+    def write_query_links(self, query_batch: List[Dict[str, Any]]) -> None:
+        """Write READS / WRITES edges from Function → DbTable for #843.
+
+        Each record must have:
+            kind: "method_query"
+            method_name, class_name, method_path, db_tables, operation, line_number
+        """
+        method_queries = [r for r in query_batch if r.get("kind") == "method_query" and r.get("db_tables")]
+        if not method_queries:
+            return
+
+        # Flatten: one edge per (method, table)
+        edges = []
+        for r in method_queries:
+            for tbl in r["db_tables"]:
+                edges.append({
+                    "method_name": r.get("method_name"),
+                    "class_name": r.get("class_name"),
+                    "method_path": r.get("method_path"),
+                    "table_name": tbl,
+                    "operation": r.get("operation", "READS"),
+                    "line_number": r.get("line_number", 0),
+                })
+
+        batch_size = 500
+        for op in ("READS", "WRITES"):
+            op_edges = [e for e in edges if e["operation"] == op]
+            for i in range(0, len(op_edges), batch_size):
+                with self.driver.session() as session:
+                    session.run(
+                        f"""
+                        UNWIND $batch AS q
+                        MATCH (fn:Function {{name: q.method_name, path: q.method_path}})
+                        MERGE (tbl:DbTable {{name: q.table_name}})
+                        ON CREATE SET tbl.fqn = q.table_name
+                        MERGE (fn)-[:{op} {{line_number: q.line_number}}]->(tbl)
+                        """,
+                        batch=op_edges[i : i + batch_size],
+                    )
+        info_logger(f"[ORM] Written {len(edges)} READS/WRITES query edges")
+
+    def write_mybatis_links(self, mybatis_batch: List[Dict[str, Any]]) -> None:
+        """Write READS / WRITES edges from Function → DbTable for MyBatis XML mappers.
+
+        Matches Function nodes by (name, class_context) instead of path because
+        the XML mapper files don't directly reference Java source paths.
+
+        Each record must have:
+            method_name, class_name, db_tables (list), operation ("READS"/"WRITES")
+        """
+        edges = []
+        for r in mybatis_batch:
+            for tbl in r.get("db_tables", []):
+                edges.append({
+                    "method_name": r["method_name"],
+                    "class_name": r["class_name"],
+                    "table_name": tbl,
+                    "operation": r.get("operation", "READS"),
+                })
+
+        if not edges:
+            return
+
+        batch_size = 500
+        written = 0
+        for op in ("READS", "WRITES"):
+            op_edges = [e for e in edges if e["operation"] == op]
+            if not op_edges:
+                continue
+            for i in range(0, len(op_edges), batch_size):
+                with self.driver.session() as session:
+                    session.run(
+                        f"""
+                        UNWIND $batch AS q
+                        MATCH (fn:Function {{name: q.method_name}})
+                        WHERE fn.class_context = q.class_name
+                        MERGE (tbl:DbTable {{name: q.table_name}})
+                        ON CREATE SET tbl.fqn = q.table_name
+                        MERGE (fn)-[:{op}]->(tbl)
+                        """,
+                        batch=op_edges[i : i + batch_size],
+                    )
+                written += len(op_edges[i : i + batch_size])
+        info_logger(f"[MYBATIS] Written {written} READS/WRITES MyBatis edges")
+
+    def write_spring_data_repo_links(self, orm_batch: List[Dict[str, Any]]) -> None:
+        """Write READS/WRITES edges for Spring Data repository derived-query methods.
+
+        Each record must have kind='spring_data_method' and:
+            entity_class, method_name, method_path, operation, line_number
+
+        Uses a two-hop lookup: Function → (entity_class Class)-[:MAPS_TO]→ DbTable
+        so no table name is required at parse time.
+        """
+        records = [r for r in orm_batch if r.get("kind") == "spring_data_method"]
+        if not records:
+            return
+
+        edges = [
+            {
+                "method_name": r["method_name"],
+                "method_path": r["method_path"],
+                "entity_class": r["entity_class"],
+                "operation": r.get("operation", "READS"),
+                "line_number": r.get("line_number", 0),
+            }
+            for r in records
+        ]
+
+        batch_size = 500
+        written = 0
+        for op in ("READS", "WRITES"):
+            op_edges = [e for e in edges if e["operation"] == op]
+            if not op_edges:
+                continue
+            for i in range(0, len(op_edges), batch_size):
+                with self.driver.session() as session:
+                    session.run(
+                        f"""
+                        UNWIND $batch AS q
+                        MATCH (fn:Function {{name: q.method_name, path: q.method_path}})
+                        MATCH (entity:Class {{name: q.entity_class}})-[:MAPS_TO]->(tbl:DbTable)
+                        MERGE (fn)-[:{op} {{line_number: q.line_number, source: 'spring_data'}}]->(tbl)
+                        """,
+                        batch=op_edges[i : i + batch_size],
+                    )
+                written += len(op_edges[i : i + batch_size])
+        info_logger(f"[SPRING_DATA] Written {written} READS/WRITES derived-query edges")
+
     def delete_repository_from_graph(self, repo_path: str) -> bool:
-        repo_path_str = str(Path(repo_path).resolve())
+        repo_path_str = repo_path
         path_prefix = repo_path_str + "/"
         with self.driver.session() as session:
             result = session.run(
