@@ -22,9 +22,15 @@ Workflow (called by GraphBuilder.build_graph_from_path_async when enabled):
 Supported SCIP indexers and their install commands:
   python     → pip install scip-python   (uses Pyright)
   typescript → npm install -g @sourcegraph/scip-typescript
+  javascript → npm install -g @sourcegraph/scip-typescript  (same binary, uses --infer-tsconfig for JS-only projects)
   go         → go install github.com/sourcegraph/scip-go/cmd/scip-go@latest
   rust       → cargo install scip-rust (or rustup component add rust-analyzer)
   java       → https://github.com/sourcegraph/scip-java
+
+JavaScript indexing notes:
+  - Pure JS projects (no tsconfig.json): scip-typescript index --infer-tsconfig
+  - Mixed JS/TS projects (tsconfig.json present): scip-typescript index  (tsconfig covers .js via allowJs)
+  - Add @types/* packages as devDependencies for better type inference quality.
 """
 
 import os
@@ -51,6 +57,8 @@ EXTENSION_TO_SCIP: Dict[str, Tuple[str, str, str]] = {
     ".tsx":  ("typescript", "scip-typescript", "npm install -g @sourcegraph/scip-typescript"),
     ".js":   ("javascript", "scip-typescript", "npm install -g @sourcegraph/scip-typescript"),
     ".jsx":  ("javascript", "scip-typescript", "npm install -g @sourcegraph/scip-typescript"),
+    ".mjs":  ("javascript", "scip-typescript", "npm install -g @sourcegraph/scip-typescript"),
+    ".cjs":  ("javascript", "scip-typescript", "npm install -g @sourcegraph/scip-typescript"),
     ".go":   ("go",         "scip-go",         "go install github.com/sourcegraph/scip-go/...@latest"),
     ".rs":   ("rust",       "scip-rust",       "cargo install scip-rust"),
     ".java": ("java",       "scip-java",       "see https://github.com/sourcegraph/scip-java"),
@@ -161,15 +169,37 @@ class ScipIndexer:
     def _build_command(self, lang: str, binary: str, project_path: Path, output_file: Path) -> Optional[List]:
         """Build the CLI command for each supported SCIP indexer."""
         out = str(output_file)
-        proj = str(project_path)
 
         if lang == "python":
             # scip-python index . --output index.scip
             return [binary, "index", ".", "--output", out]
 
-        elif lang in ("typescript", "javascript"):
+        elif lang == "typescript":
             # scip-typescript index --output index.scip
+            # Requires tsconfig.json in the project root.
             return [binary, "index", "--output", out]
+
+        elif lang == "javascript":
+            # scip-typescript handles JavaScript too via the same binary.
+            #
+            # - Pure JS projects (no tsconfig.json): use --infer-tsconfig so
+            #   scip-typescript auto-generates a temporary tsconfig covering all
+            #   .js/.jsx/.mjs/.cjs files.  Requires package.json at the root.
+            # - Mixed JS/TS projects (tsconfig.json present): use the standard
+            #   command; the tsconfig should already have allowJs:true.
+            has_tsconfig = (project_path / "tsconfig.json").exists()
+            if has_tsconfig:
+                info_logger(
+                    "JavaScript project has tsconfig.json — running scip-typescript index "
+                    "(ensure allowJs:true is set for full JS coverage)."
+                )
+                return [binary, "index", "--output", out]
+            else:
+                info_logger(
+                    "JavaScript project has no tsconfig.json — running scip-typescript index "
+                    "--infer-tsconfig (auto-generates a temporary tsconfig)."
+                )
+                return [binary, "index", "--infer-tsconfig", "--output", out]
 
         elif lang == "go":
             # scip-go --output index.scip
@@ -276,12 +306,34 @@ class ScipIndexParser:
                 symbol_def_table[sym_info.symbol]["documentation"] = "\n".join(sym_info.documentation)
                 symbol_def_table[sym_info.symbol]["kind"] = sym_info.kind
 
+        # Final pass: infer kind from symbol string when SCIP reported kind=0.
+        # scip-python often emits kind=0 even for classes and functions.
+        #   - Symbol ending with '#'        → Class     (kind 7)
+        #   - Symbol ending with '().'      → Function  (kind 17) or Method (kind 26)
+        for sym, info in symbol_def_table.items():
+            if info.get("kind", 0) == 0:
+                if sym.endswith("#"):
+                    info["kind"] = 7   # Class
+                elif sym.endswith("()."):
+                    # Treat as Method (26) if inside a class scope (#), else Function (17)
+                    info["kind"] = 26 if "#" in sym else 17
+
         # Second pass: extract per-file nodes and reference edges
         files_data: Dict[str, Dict] = {}
+
+        # Pre-read source lines for all docs for call-site verification
+        doc_source_lines: Dict[str, List[str]] = {}
+        for doc in index.documents:
+            src_path = project_path / doc.relative_path
+            try:
+                doc_source_lines[doc.relative_path] = src_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                doc_source_lines[doc.relative_path] = []
 
         for doc in index.documents:
             rel_path = doc.relative_path
             abs_path = str((project_path / rel_path).resolve())
+            source_lines = doc_source_lines.get(rel_path, [])
 
             file_data: Dict[str, Any] = {
                 "functions": [],
@@ -289,13 +341,15 @@ class ScipIndexParser:
                 "variables": [],
                 "imports": [],
                 "function_calls_scip": [],
+                "module_level_calls_scip": [],  # top-level (module scope) calls
                 "path": abs_path,
                 "lang": self._lang_from_path(rel_path),
                 "is_dependency": False,
             }
 
             # Track which symbol is the enclosing definition at each line
-            # so we know what "calls" what
+            # so we know what "calls" what. Also store enclosing_range for
+            # accurate scope containment checks.
             definition_symbols_in_doc = []
             for occ in doc.occurrences:
                 role = getattr(occ, "symbol_roles", getattr(occ, "role", 0))
@@ -366,27 +420,59 @@ class ScipIndexParser:
                         node["class_context"] = None
                         file_data["variables"].append(node)
 
-                else:  # Reference — find its definition for CALLS edge
-                    if sym in symbol_def_table:
-                        callee_info = symbol_def_table[sym]
-                        # Find the enclosing definition in THIS document
-                        caller_sym = self._find_enclosing_definition(
-                            line, definition_symbols_in_doc
-                        )
-                        if caller_sym:
-                            caller_info = symbol_def_table.get(caller_sym, {})
-                            file_data["function_calls_scip"].append({
-                                "caller_symbol": caller_sym,
-                                "caller_file": abs_path,
-                                "caller_line": caller_info.get("line", 0),
-                                "callee_symbol": sym,
-                                "callee_file": str(
-                                    (project_path / callee_info["file"]).resolve()
-                                ),
-                                "callee_line": callee_info["line"],
-                                "callee_name": self._name_from_symbol(sym),
-                                "ref_line": line,
-                            })
+                else:  # Reference — filter to true call-sites, then build edges
+                    if sym not in symbol_def_table:
+                        continue
+
+                    callee_info = symbol_def_table[sym]
+                    callee_kind = callee_info.get("kind", 0)
+
+                    # ── FIX 1: Only treat as a call when '(' immediately follows
+                    # the referenced token in the source.  This eliminates false
+                    # positives where a function is passed as an argument, returned,
+                    # used as a decorator without args, etc.
+                    # We also accept Class-kind references followed by '(' because
+                    # that is a constructor / instantiation call.
+                    r = list(occ.range)
+                    ref_line_idx = r[0]
+                    col_end = r[2] if len(r) > 2 else (r[1] if len(r) > 1 else 0)
+                    src_line = source_lines[ref_line_idx] if ref_line_idx < len(source_lines) else ""
+                    char_after = src_line[col_end:col_end + 1] if col_end < len(src_line) else ""
+
+                    # Callable: functions/methods must be followed by '('; classes
+                    # must also be followed by '(' (instantiation).
+                    is_callable_ref = char_after == "("
+                    if not is_callable_ref:
+                        continue
+
+                    # ── FIX 2: Enclosing caller — use improved scope check
+                    caller_sym = self._find_enclosing_definition(
+                        line, definition_symbols_in_doc
+                    )
+
+                    edge = {
+                        "callee_symbol": sym,
+                        "callee_file": str(
+                            (project_path / callee_info["file"]).resolve()
+                        ),
+                        "callee_line": callee_info["line"],
+                        "callee_name": self._name_from_symbol(sym),
+                        "callee_kind": callee_kind,
+                        "ref_line": line,
+                        "caller_file": abs_path,
+                    }
+
+                    if caller_sym:
+                        caller_info = symbol_def_table.get(caller_sym, {})
+                        edge["caller_symbol"] = caller_sym
+                        edge["caller_line"] = caller_info.get("line", 0)
+                        file_data["function_calls_scip"].append(edge)
+                    else:
+                        # ── FIX 3: Module-level (top-level) call — no enclosing fn
+                        # Record separately so scip_pipeline can write File->Fn edges.
+                        edge["caller_symbol"] = None
+                        edge["caller_line"] = 0
+                        file_data["module_level_calls_scip"].append(edge)
 
             files_data[abs_path] = file_data
 
@@ -456,14 +542,58 @@ class ScipIndexParser:
         self, ref_line: int, definition_occurrences: list
     ) -> Optional[str]:
         """
-        Given a reference at `ref_line`, find the symbol of the most recent
-        definition that started before this line. That's the 'caller'.
+        Given a reference at `ref_line`, find the symbol whose definition scope
+        (enclosing_range) contains this line, preferring the innermost (largest
+        start line). Falls back to nearest-before heuristic only when SCIP
+        provides no enclosing_range data at all (older SCIP versions).
+        Returns None if the call is at module scope.
         """
-        best = None
+        # --- Pass 1: use enclosing_range when available ---
+        best_enclosing: Optional[str] = None
+        best_enclosing_start = -1
+        any_enclosing_range_present = False
+        for occ in definition_occurrences:
+            er = list(getattr(occ, "enclosing_range", []))
+            if not er:
+                continue
+            any_enclosing_range_present = True
+            # SCIP enclosing_range format:
+            #   3-element [line, col_start, col_end]        → same-line range
+            #   4-element [start_line, start_col, end_line, end_col] → multi-line
+            if len(er) == 4:
+                enc_start = er[0] + 1  # 0-indexed → 1-indexed
+                enc_end = er[2] + 1
+            else:
+                # single-line: [line, col_start, col_end] — only covers that line
+                enc_start = er[0] + 1
+                enc_end = enc_start
+            if enc_start <= ref_line <= enc_end:
+                if enc_start > best_enclosing_start:
+                    best_enclosing = occ.symbol
+                    best_enclosing_start = enc_start
+        if best_enclosing:
+            return best_enclosing
+
+        # When SCIP provided enclosing_range data for this document, trust it
+        # completely: no enclosing range covers ref_line → module scope call.
+        if any_enclosing_range_present:
+            return None
+
+        # --- Pass 2: fallback — nearest function/method def before ref_line ---
+        # Only used for SCIP versions that don't emit enclosing_range.
+        best: Optional[str] = None
         best_line = -1
         for occ in definition_occurrences:
+            sym = occ.symbol
+            # Only consider callable definitions (functions/methods end with '().')
+            if not sym.endswith("()."):
+                continue
+            # Skip module __init__ pseudo-symbol
+            if sym.endswith("/__init__:"):
+                continue
             occ_line = occ.range[0] + 1 if occ.range else 0
             if occ_line <= ref_line and occ_line > best_line:
-                best = occ.symbol
+                best = sym
                 best_line = occ_line
         return best
+

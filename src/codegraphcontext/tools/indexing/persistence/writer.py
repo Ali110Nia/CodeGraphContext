@@ -618,24 +618,73 @@ class GraphWriter:
     ) -> None:
         with self.driver.session() as session:
             for file_data in files_data.values():
+                # ── Function/Method caller → Function callee ────────────────
                 for edge in file_data.get("function_calls_scip", []):
                     try:
-                        session.run(
-                            """
-                            MATCH (caller:Function {name: $caller_name, path: $caller_file, line_number: $caller_line})
-                            MATCH (callee:Function {name: $callee_name, path: $callee_file, line_number: $callee_line})
-                            MERGE (caller)-[:CALLS {line_number: $ref_line, source: 'scip'}]->(callee)
-                        """,
-                            caller_name=name_from_symbol(edge["caller_symbol"]),
-                            caller_file=edge["caller_file"],
-                            caller_line=edge["caller_line"],
-                            callee_name=edge["callee_name"],
-                            callee_file=edge["callee_file"],
-                            callee_line=edge["callee_line"],
-                            ref_line=edge["ref_line"],
-                        )
+                        callee_kind = edge.get("callee_kind", 0)
+                        if callee_kind == 7:  # Class instantiation
+                            session.run(
+                                """
+                                MATCH (caller:Function {name: $caller_name, path: $caller_file, line_number: $caller_line})
+                                MATCH (callee:Class {name: $callee_name, path: $callee_file})
+                                MERGE (caller)-[:CALLS {line_number: $ref_line, source: 'scip'}]->(callee)
+                            """,
+                                caller_name=name_from_symbol(edge["caller_symbol"]),
+                                caller_file=edge["caller_file"],
+                                caller_line=edge["caller_line"],
+                                callee_name=edge["callee_name"],
+                                callee_file=edge["callee_file"],
+                                ref_line=edge["ref_line"],
+                            )
+                        else:
+                            session.run(
+                                """
+                                MATCH (caller:Function {name: $caller_name, path: $caller_file, line_number: $caller_line})
+                                MATCH (callee:Function {name: $callee_name, path: $callee_file, line_number: $callee_line})
+                                MERGE (caller)-[:CALLS {line_number: $ref_line, source: 'scip'}]->(callee)
+                            """,
+                                caller_name=name_from_symbol(edge["caller_symbol"]),
+                                caller_file=edge["caller_file"],
+                                caller_line=edge["caller_line"],
+                                callee_name=edge["callee_name"],
+                                callee_file=edge["callee_file"],
+                                callee_line=edge["callee_line"],
+                                ref_line=edge["ref_line"],
+                            )
                     except Exception as e:
                         warning_logger(f"Failed to write SCIP call edge: {e}")
+
+                # ── Module-level (top-level) caller → Function/Class callee ─
+                for edge in file_data.get("module_level_calls_scip", []):
+                    try:
+                        callee_kind = edge.get("callee_kind", 0)
+                        if callee_kind == 7:  # Class instantiation at module scope
+                            session.run(
+                                """
+                                MATCH (caller:File {path: $caller_file})
+                                MATCH (callee:Class {name: $callee_name, path: $callee_file})
+                                MERGE (caller)-[:CALLS {line_number: $ref_line, source: 'scip'}]->(callee)
+                            """,
+                                caller_file=edge["caller_file"],
+                                callee_name=edge["callee_name"],
+                                callee_file=edge["callee_file"],
+                                ref_line=edge["ref_line"],
+                            )
+                        else:
+                            session.run(
+                                """
+                                MATCH (caller:File {path: $caller_file})
+                                MATCH (callee:Function {name: $callee_name, path: $callee_file, line_number: $callee_line})
+                                MERGE (caller)-[:CALLS {line_number: $ref_line, source: 'scip'}]->(callee)
+                            """,
+                                caller_file=edge["caller_file"],
+                                callee_name=edge["callee_name"],
+                                callee_file=edge["callee_file"],
+                                callee_line=edge["callee_line"],
+                                ref_line=edge["ref_line"],
+                            )
+                    except Exception as e:
+                        warning_logger(f"Failed to write SCIP module-level call edge: {e}")
 
     def delete_file_from_graph(self, path: str) -> None:
         file_path_str = str(Path(path).resolve())
