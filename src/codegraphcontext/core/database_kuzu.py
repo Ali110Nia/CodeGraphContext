@@ -380,6 +380,9 @@ class KuzuSessionWrapper:
                 result = self.conn.execute(translated_query, translated_params)
             return KuzuResultWrapper(result)
         except Exception as e:
+            # Log non-fatal schema collisions at debug level instead of swallowing
+            # them silently. This preserves the "idempotent CREATE" behaviour while
+            # still emitting a traceable message for unexpected collisions.
             if self._should_fail_fast(query_type, e):
                 self._disable_query_type(query_type, e)
                 return KuzuResultWrapper(None)
