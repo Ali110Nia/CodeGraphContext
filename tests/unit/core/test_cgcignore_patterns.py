@@ -5,6 +5,8 @@ import json
 import pytest
 import uuid
 import time
+import socket
+import re
 from pathlib import Path
 from pathspec import PathSpec
 
@@ -23,6 +25,15 @@ def run(cmd):
     """Run command and return output"""
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.stdout + result.stderr
+
+
+def _is_neo4j_reachable(host: str = "localhost", port: int = 7687, timeout: float = 1.0) -> bool:
+    """Return True when a local Neo4j bolt endpoint is reachable."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 def setup_test_dir(test_dir: Path):
     """Create clean test directory"""
@@ -176,8 +187,20 @@ def test_tc11_match_files_in_subdirectories():
 # ============================================================
 
 @pytest.fixture(autouse=True)
-def clean_before_integration_test():
-    """Clean database before each integration test"""
+def clean_before_integration_test(request):
+    """Prepare DB only for integration-style cases that require live cgc DB access."""
+    name = request.node.name
+    match = re.match(r"test_tc(\d+)_", name)
+    case_id = int(match.group(1)) if match else 0
+
+    # TC-12+ are integration tests that execute live `cgc` commands.
+    if case_id < 12:
+        yield
+        return
+
+    if not _is_neo4j_reachable():
+        pytest.skip("Neo4j is not reachable on localhost:7687; skipping live DB integration cases.")
+
     clean_db_completely()
     yield
     # Cleanup after test
