@@ -85,6 +85,74 @@ async def run_tree_sitter_index_async(
     t2 = time.time()
     info_logger(f"Function calls created in {t2 - t1:.1f}s. Total post-processing: {t2 - t0:.1f}s")
 
+    # ── Spring injection edges (#887) ─────────────────────────────────────────
+    spring_inject_batch = []
+    for fd in all_file_data:
+        injections = fd.get("spring_injections")
+        if injections:
+            spring_inject_batch.extend(injections)
+    if spring_inject_batch:
+        info_logger(f"[SPRING] Writing {len(spring_inject_batch)} Spring injection edges...")
+        writer.write_spring_inject_links(spring_inject_batch)
+
+    # Also collect Spring endpoint properties from functions and write them
+    endpoint_batch = []
+    for fd in all_file_data:
+        for fn in fd.get("functions", []):
+            if fn.get("http_method"):
+                endpoint_batch.append({
+                    "func_name": fn["name"],
+                    "path": fn["path"],
+                    "line_number": fn["line_number"],
+                    "http_method": fn.get("http_method"),
+                    "http_path": fn.get("http_path"),
+                })
+    if endpoint_batch:
+        writer.write_spring_endpoint_properties(endpoint_batch)
+
+    # ── Maven / Gradle build graph (#888) ────────────────────────────────────
+    if not is_dependency and path.is_dir():
+        try:
+            from ...tools.languages.maven import parse_repo_maven
+            maven_data = parse_repo_maven(path.resolve())
+            if maven_data.get("modules"):
+                writer.write_maven_build_graph(maven_data, str(path.resolve()))
+        except Exception as _me:
+            info_logger(f"[MAVEN] Build graph failed (skipping): {_me}")
+
+        try:
+            from ...tools.languages.gradle import parse_repo_gradle
+            gradle_data = parse_repo_gradle(path.resolve())
+            if gradle_data.get("modules"):
+                writer.write_gradle_build_graph(gradle_data, str(path.resolve()))
+        except Exception as _ge:
+            info_logger(f"[GRADLE] Build graph failed (skipping): {_ge}")
+
+    # ── ORM / datasource code linkage (#843) ─────────────────────────────────
+    orm_batch = []
+    for fd in all_file_data:
+        orm_mappings = fd.get("orm_mappings")
+        if orm_mappings:
+            orm_batch.extend(orm_mappings)
+    if orm_batch:
+        class_table_count = sum(1 for r in orm_batch if r.get("kind") == "class_table")
+        query_count = sum(1 for r in orm_batch if r.get("kind") == "method_query")
+        info_logger(
+            f"[ORM] Writing {class_table_count} class→table mappings and {query_count} query links..."
+        )
+        writer.write_orm_mapping_links(orm_batch)
+        writer.write_query_links(orm_batch)
+
+    # ── MyBatis XML mapper READS / WRITES edges ───────────────────────────────
+    if not is_dependency and path.is_dir():
+        try:
+            from ...tools.languages.mybatis import find_and_parse_mybatis_mappers
+            mybatis_batch = find_and_parse_mybatis_mappers(path.resolve())
+            if mybatis_batch:
+                writer.write_mybatis_links(mybatis_batch)
+        except Exception as _me:
+            info_logger(f"[MYBATIS] Mapper parsing failed (skipping): {_me}")
+
     # ── Phase 4: embedding generation (optional, config-gated) ────────────────
     from ...cli.config_manager import get_config_value as _gcv
     if (_gcv("ENABLE_VECTOR_RESOLVE") or "false").lower() == "true":

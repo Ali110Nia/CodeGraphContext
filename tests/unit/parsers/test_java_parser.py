@@ -225,3 +225,139 @@ class TestJavaCrossFileResolution:
                 assert resolved["called_file_path"] == service_path, (
                     f"WorkService has no DI fields; expected self-resolution for '{call['name']}'"
                 )
+
+
+# ---------------------------------------------------------------------------
+# ORM / datasource mapping extraction tests (#843)
+# ---------------------------------------------------------------------------
+
+JPA_ENTITY_SRC = """
+package com.example;
+
+import javax.persistence.Entity;
+import javax.persistence.Table;
+import javax.persistence.Column;
+
+@Entity
+@Table(name = "users")
+public class User {
+    @Column(name = "email")
+    private String email;
+
+    @Column(name = "created_at")
+    private java.time.Instant createdAt;
+}
+"""
+
+CASSANDRA_TABLE_SRC = """
+package com.example;
+
+import org.springframework.data.cassandra.core.mapping.Table;
+
+@Table(value = "events")
+public class EventEntity {
+    private String id;
+}
+"""
+
+REDIS_HASH_SRC = """
+package com.example;
+
+import org.springframework.data.redis.core.RedisHash;
+
+@RedisHash(value = "session")
+public class SessionData {
+    private String token;
+}
+"""
+
+SPRING_QUERY_SRC = """
+package com.example;
+
+import org.springframework.data.jpa.repository.Query;
+
+public interface UserRepository {
+    @Query("SELECT u FROM users u WHERE u.id = :id")
+    User findById(Long id);
+
+    @Query("INSERT INTO audit_log(user_id, action) VALUES (:userId, :action)")
+    void logAction(Long userId, String action);
+}
+"""
+
+MYBATIS_SRC = """
+package com.example;
+
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Insert;
+
+public interface UserMapper {
+    @Select("SELECT * FROM users WHERE id = #{id}")
+    User selectById(int id);
+
+    @Insert("INSERT INTO orders(user_id, total) VALUES(#{userId}, #{total})")
+    int createOrder(int userId, double total);
+}
+"""
+
+
+class TestOrmMappingExtraction:
+    def test_jpa_entity_table_mapping(self, parser):
+        data = _write_and_parse(parser, JPA_ENTITY_SRC)
+        orm = data.get("orm_mappings", [])
+        class_maps = [r for r in orm if r["kind"] == "class_table"]
+        assert len(class_maps) == 1
+        assert class_maps[0]["orm_table"] == "users"
+        assert class_maps[0]["datastore"] == "mysql"
+        assert class_maps[0]["class_name"] == "User"
+
+    def test_cassandra_table_mapping(self, parser):
+        data = _write_and_parse(parser, CASSANDRA_TABLE_SRC)
+        orm = data.get("orm_mappings", [])
+        class_maps = [r for r in orm if r["kind"] == "class_table"]
+        assert len(class_maps) == 1
+        assert class_maps[0]["orm_table"] == "events"
+        assert class_maps[0]["datastore"] == "cassandra"
+
+    def test_redis_hash_mapping(self, parser):
+        data = _write_and_parse(parser, REDIS_HASH_SRC)
+        orm = data.get("orm_mappings", [])
+        class_maps = [r for r in orm if r["kind"] == "class_table"]
+        assert len(class_maps) == 1
+        assert class_maps[0]["orm_table"] == "session"
+        assert class_maps[0]["datastore"] == "redis"
+
+    def test_spring_query_read_detection(self, parser):
+        data = _write_and_parse(parser, SPRING_QUERY_SRC)
+        orm = data.get("orm_mappings", [])
+        reads = [r for r in orm if r.get("operation") == "READS"]
+        assert any("users" in r.get("db_tables", []) for r in reads), (
+            "Expected a READS edge to 'users'"
+        )
+
+    def test_spring_query_write_detection(self, parser):
+        data = _write_and_parse(parser, SPRING_QUERY_SRC)
+        orm = data.get("orm_mappings", [])
+        writes = [r for r in orm if r.get("operation") == "WRITES"]
+        assert any("audit_log" in r.get("db_tables", []) for r in writes), (
+            "Expected a WRITES edge to 'audit_log'"
+        )
+
+    def test_mybatis_select_annotation(self, parser):
+        data = _write_and_parse(parser, MYBATIS_SRC)
+        orm = data.get("orm_mappings", [])
+        reads = [r for r in orm if r.get("operation") == "READS"]
+        assert any("users" in r.get("db_tables", []) for r in reads)
+
+    def test_mybatis_insert_annotation(self, parser):
+        data = _write_and_parse(parser, MYBATIS_SRC)
+        orm = data.get("orm_mappings", [])
+        writes = [r for r in orm if r.get("operation") == "WRITES"]
+        assert any("orders" in r.get("db_tables", []) for r in writes)
+
+    def test_orm_mappings_key_present(self, parser):
+        """orm_mappings key must always be present in parse() output."""
+        data = _write_and_parse(parser, CONTROLLER_SRC)
+        assert "orm_mappings" in data
+        assert isinstance(data["orm_mappings"], list)
+

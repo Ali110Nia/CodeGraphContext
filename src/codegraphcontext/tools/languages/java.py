@@ -1,8 +1,83 @@
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import re
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.utils.tree_sitter_manager import execute_query
+
+# Spring stereotype annotations → canonical label written to the graph (#887)
+_SPRING_CLASS_STEREOTYPES: Dict[str, str] = {
+    "Controller": "CONTROLLER",
+    "RestController": "REST_CONTROLLER",
+    "Service": "SERVICE",
+    "Repository": "REPOSITORY",
+    "Component": "COMPONENT",
+    "Configuration": "CONFIGURATION",
+    "ControllerAdvice": "CONTROLLER_ADVICE",
+    "RestControllerAdvice": "REST_CONTROLLER_ADVICE",
+}
+
+# Spring HTTP mapping annotations → HTTP method string (#887)
+_SPRING_HTTP_MAPPINGS: Dict[str, Optional[str]] = {
+    "RequestMapping": None,   # method determined from `method` attribute
+    "GetMapping": "GET",
+    "PostMapping": "POST",
+    "PutMapping": "PUT",
+    "DeleteMapping": "DELETE",
+    "PatchMapping": "PATCH",
+}
+
+# Annotations that indicate dependency injection (#887)
+_SPRING_INJECT_ANNOTATIONS = frozenset({"Autowired", "Inject", "Resource"})
+
+# ── ORM / Datasource annotation constants (#843) ─────────────────────────────
+
+# JPA / Hibernate class-level annotations that map a class to a DB table
+_JPA_TABLE_ANNOTATIONS = frozenset({"Entity", "Table"})
+
+# Spring Data Cassandra class-level annotations
+_CASSANDRA_TABLE_ANNOTATIONS = frozenset({"CassandraTable", "PrimaryTable"})
+# @Table is shared between JPA and Cassandra — resolved by import context
+
+# Spring Data Redis
+_REDIS_HASH_ANNOTATIONS = frozenset({"RedisHash"})
+
+# MyBatis / Spring Data @Query — methods that carry raw SQL or CQL strings
+_SQL_QUERY_ANNOTATIONS = frozenset({"Query", "Select", "Insert", "Update", "Delete",
+                                     "NamedQuery", "NamedNativeQuery"})
+
+# Determines READ vs WRITE from a SQL/CQL string
+_WRITE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "REPLACE")
+
+
+def _parse_sql_tables(sql: str) -> List[str]:
+    """Extract table names from a SQL/CQL string without a full parser.
+
+    Handles: FROM x, JOIN x, INTO x, UPDATE x, TABLE x
+    Returns lowercase table names.
+    """
+    sql_upper = sql.upper()
+    tables = []
+    for kw in ("FROM", "JOIN", "INTO", "UPDATE", "TABLE"):
+        for m in re.finditer(rf"\b{kw}\s+([`'\"]?)([\w.]+)\1", sql_upper):
+            raw = m.group(2)
+            # Strip schema prefix: schema.table → table
+            tables.append(raw.split(".")[-1].lower())
+    return list(dict.fromkeys(tables))  # deduplicate preserving order
+
+
+def _sql_operation(sql: str) -> str:
+    """Return 'READS' or 'WRITES' based on SQL DML prefix."""
+    stripped = sql.strip().upper()
+    for prefix in _WRITE_PREFIXES:
+        if stripped.startswith(prefix):
+            return "WRITES"
+    return "READS"
+
+
+def _extract_annotation_path(args_text: str) -> Optional[str]:
+    """Extract the first string literal from annotation arguments, e.g. '("/api/users")' -> '/api/users'."""
+    m = re.search(r'"([^"]*)"', args_text)
+    return m.group(1) if m else None
 
 JAVA_QUERIES = {
     "functions": """
@@ -129,6 +204,12 @@ class JavaTreeSitterParser:
                 elif capture_name == "calls":
                     parsed_calls = self._parse_calls(results, source_code, var_type_map)
 
+            # Spring injection extraction (#887) — needs tree + parsed_classes
+            spring_injections = self._extract_spring_injections(tree, path, parsed_classes)
+
+            # ORM / datasource mapping extraction (#843)
+            orm_mappings = self._extract_orm_mappings(tree, path, parsed_classes, parsed_functions)
+
             return {
                 "path": str(path),
                 "functions": parsed_functions,
@@ -136,6 +217,8 @@ class JavaTreeSitterParser:
                 "variables": parsed_variables,
                 "imports": parsed_imports,
                 "function_calls": parsed_calls,
+                "spring_injections": spring_injections,
+                "orm_mappings": orm_mappings,
                 "is_dependency": is_dependency,
                 "lang": self.language_name,
                 "package_name": package_name,
@@ -150,6 +233,7 @@ class JavaTreeSitterParser:
                 "variables": [],
                 "imports": [],
                 "function_calls": [],
+                "orm_mappings": [],
                 "is_dependency": is_dependency,
                 "lang": self.language_name,
             }
@@ -177,6 +261,34 @@ class JavaTreeSitterParser:
     def _get_node_text(self, node: Any) -> str:
         if not node: return ""
         return node.text.decode("utf-8")
+
+    # ── Annotation helpers (#887) ───────────────────────────────────────────
+
+    def _get_annotation_details(self, ann_node: Any) -> Tuple[str, str]:
+        """Return (annotation_name, annotation_args_text) for an annotation/marker_annotation node."""
+        name_node = ann_node.child_by_field_name("name")
+        args_node = ann_node.child_by_field_name("arguments")
+        ann_name = self._get_node_text(name_node) if name_node else ""
+        ann_args = self._get_node_text(args_node) if args_node else ""
+        return ann_name, ann_args
+
+    def _get_node_annotations(self, node: Any) -> List[Tuple[str, str]]:
+        """Return list of (name, args_text) for all annotations on a node's modifiers."""
+        # child_by_field_name("modifiers") is unreliable across tree-sitter-java versions;
+        # fall back to scanning children by node type.
+        modifiers = node.child_by_field_name("modifiers")
+        if not modifiers:
+            for child in node.children:
+                if child.type == "modifiers":
+                    modifiers = child
+                    break
+        if not modifiers:
+            return []
+        result = []
+        for child in modifiers.children:
+            if child.type in ("annotation", "marker_annotation"):
+                result.append(self._get_annotation_details(child))
+        return result
 
     def _parse_functions(self, captures: list, source_code: str, path: Path, package_name: Optional[str] = None) -> list[Dict[str, Any]]:
         functions = []
@@ -221,6 +333,7 @@ class JavaTreeSitterParser:
                         }
 
                         if package_name:
+                            func_data["package_name"] = package_name
                             class_ctx = context_name if (context_type and "class" in context_type) else None
                             if class_ctx:
                                 func_data["qualified_name"] = f"{package_name}.{class_ctx}.{func_name}"
@@ -229,7 +342,21 @@ class JavaTreeSitterParser:
 
                         if self.index_source:
                             func_data["source"] = source_text
-                        
+
+                        # Spring HTTP mapping / @Transactional detection (#887)
+                        for ann_name, ann_args in self._get_node_annotations(node):
+                            if ann_name in _SPRING_HTTP_MAPPINGS:
+                                implicit_method = _SPRING_HTTP_MAPPINGS[ann_name]
+                                if implicit_method:
+                                    func_data["http_method"] = implicit_method
+                                else:
+                                    # @RequestMapping: try to read method= attribute
+                                    m = re.search(r'method\s*=\s*RequestMethod\.(\w+)', ann_args)
+                                    func_data["http_method"] = m.group(1) if m else "ANY"
+                                func_data["http_path"] = _extract_annotation_path(ann_args)
+                            elif ann_name == "Transactional":
+                                func_data["transactional"] = True
+
                         functions.append(func_data)
                         
                 except Exception as e:
@@ -296,6 +423,18 @@ class JavaTreeSitterParser:
                         if package_name:
                             class_data["qualified_name"] = f"{package_name}.{class_name}"
 
+                        # Spring stereotype detection (#887)
+                        for ann_name, ann_args in self._get_node_annotations(node):
+                            if ann_name in _SPRING_CLASS_STEREOTYPES:
+                                class_data["spring_stereotype"] = _SPRING_CLASS_STEREOTYPES[ann_name]
+                                # @RequestMapping on the class gives a path prefix
+                                break
+                        # Also check if class-level @RequestMapping is present (path prefix)
+                        for ann_name, ann_args in self._get_node_annotations(node):
+                            if ann_name == "RequestMapping":
+                                class_data["request_mapping_prefix"] = _extract_annotation_path(ann_args)
+                                break
+
                         if self.index_source:
                             class_data["source"] = source_text
                         
@@ -359,6 +498,226 @@ class JavaTreeSitterParser:
                      })
 
         return variables
+
+    def _extract_orm_mappings(
+        self,
+        tree: Any,
+        path: Path,
+        parsed_classes: List[Dict[str, Any]],
+        parsed_functions: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Walk the tree and emit ORM mapping records for #843.
+
+        Detects:
+        - @Entity + @Table(name=...)  → JPA class→table mapping
+        - @Table(value=...)           → Cassandra (Spring Data Cassandra)
+        - @RedisHash(value=...)       → Spring Data Redis
+        - @Query / @Select / @Insert / @Update / @Delete with SQL strings
+        - @NamedQuery / @NamedNativeQuery (class-level named queries)
+        - MyBatis @Select / @Insert / @Update / @Delete on methods
+
+        Returns list of dicts with type "class_table" | "method_query":
+          class_table: {kind, class_name, class_path, orm_table, line_number}
+          method_query: {kind, method_name, class_name, method_path, db_tables, operation, sql, line_number}
+        """
+        if not (parsed_classes or parsed_functions):
+            return []
+
+        # Build quick lookup: line -> class name
+        class_ranges = []
+        for cls in parsed_classes:
+            class_ranges.append((cls["line_number"], cls.get("end_line", 999999), cls["name"]))
+
+        def _class_at_line(line: int) -> Optional[str]:
+            for start, end, cname in class_ranges:
+                if start <= line <= end:
+                    return cname
+            return None
+
+        mappings: List[Dict[str, Any]] = []
+
+        def _walk(node: Any) -> None:  # noqa: C901
+            # ── CLASS-LEVEL annotations ────────────────────────────────────
+            if node.type in ("class_declaration", "interface_declaration", "annotation_type_declaration"):
+                annotations = self._get_node_annotations(node)
+                ann_map = {n: args for n, args in annotations}
+                line = node.start_point[0] + 1
+
+                name_node = node.child_by_field_name("name")
+                class_name = self._get_node_text(name_node) if name_node else None
+
+                if "Entity" in ann_map:
+                    # JPA entity: look for @Table(name=...)
+                    table_name = None
+                    if "Table" in ann_map:
+                        t_args = ann_map["Table"] or ""
+                        m = re.search(r'name\s*=\s*"([^"]+)"', t_args)
+                        if not m:
+                            m = re.search(r'"([^"]+)"', t_args)
+                        table_name = m.group(1) if m else (class_name.lower() if class_name else None)
+                    elif class_name:
+                        table_name = class_name.lower()  # JPA default: snake_case of class name
+
+                    if class_name and table_name:
+                        mappings.append({
+                            "kind": "class_table",
+                            "datastore": "mysql",
+                            "class_name": class_name,
+                            "class_path": str(path),
+                            "orm_table": table_name,
+                            "line_number": line,
+                        })
+
+                elif "Table" in ann_map and "Entity" not in ann_map:
+                    # Could be Spring Data Cassandra @Table(value="...")
+                    t_args = ann_map["Table"] or ""
+                    m = re.search(r'value\s*=\s*"([^"]+)"', t_args)
+                    if not m:
+                        m = re.search(r'"([^"]+)"', t_args)
+                    table_name = m.group(1) if m else (class_name.lower() if class_name else None)
+                    if class_name and table_name:
+                        mappings.append({
+                            "kind": "class_table",
+                            "datastore": "cassandra",
+                            "class_name": class_name,
+                            "class_path": str(path),
+                            "orm_table": table_name,
+                            "line_number": line,
+                        })
+
+                if "RedisHash" in ann_map:
+                    rh_args = ann_map["RedisHash"] or ""
+                    m = re.search(r'value\s*=\s*"([^"]+)"', rh_args)
+                    if not m:
+                        m = re.search(r'"([^"]+)"', rh_args)
+                    key_prefix = m.group(1) if m else (class_name or "")
+                    if class_name:
+                        mappings.append({
+                            "kind": "class_table",
+                            "datastore": "redis",
+                            "class_name": class_name,
+                            "class_path": str(path),
+                            "orm_table": key_prefix,
+                            "line_number": line,
+                        })
+
+                # @NamedQuery / @NamedNativeQuery on the class
+                for ann_name in ("NamedQuery", "NamedNativeQuery"):
+                    if ann_name in ann_map:
+                        args_text = ann_map[ann_name] or ""
+                        m_sql = re.search(r'query\s*=\s*"([^"]+)"', args_text)
+                        if m_sql:
+                            sql = m_sql.group(1)
+                            tables = _parse_sql_tables(sql)
+                            op = _sql_operation(sql)
+                            if class_name:
+                                mappings.append({
+                                    "kind": "method_query",
+                                    "datastore": "mysql",
+                                    "method_name": None,
+                                    "class_name": class_name,
+                                    "method_path": str(path),
+                                    "db_tables": tables,
+                                    "operation": op,
+                                    "sql": sql[:200],
+                                    "line_number": line,
+                                })
+
+            # ── METHOD-LEVEL annotations ───────────────────────────────────
+            elif node.type in ("method_declaration", "constructor_declaration"):
+                annotations = self._get_node_annotations(node)
+                ann_map = {n: args for n, args in annotations}
+                line = node.start_point[0] + 1
+                class_name = _class_at_line(line)
+
+                name_node = node.child_by_field_name("name")
+                method_name = self._get_node_text(name_node) if name_node else None
+
+                for ann_name in _SQL_QUERY_ANNOTATIONS:
+                    if ann_name in ann_map:
+                        args_text = ann_map[ann_name] or ""
+                        # Extract raw SQL string: first quoted string in the annotation args
+                        m = re.search(r'"([^"]{4,})"', args_text)
+                        if m:
+                            sql = m.group(1)
+                            tables = _parse_sql_tables(sql)
+                            op = _sql_operation(sql)
+                            if tables or op:
+                                mappings.append({
+                                    "kind": "method_query",
+                                    "datastore": "mysql",
+                                    "method_name": method_name,
+                                    "class_name": class_name,
+                                    "method_path": str(path),
+                                    "db_tables": tables,
+                                    "operation": op,
+                                    "sql": sql[:200],
+                                    "line_number": line,
+                                })
+                            break  # only one SQL annotation per method expected
+
+            for child in node.children:
+                _walk(child)
+
+        _walk(tree.root_node)
+        return mappings
+
+    def _extract_spring_injections(
+        self,
+        tree: Any,
+        path: Path,
+        parsed_classes: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Walk field_declaration nodes and emit injection records for @Autowired/@Inject fields.
+
+        Returns a list of dicts with keys:
+            injector_class, injector_path, injected_class, field_name, inject_line
+        """
+        if not parsed_classes:
+            return []
+
+        # Build quick lookup: line range -> class name
+        class_ranges = []
+        for cls in parsed_classes:
+            class_ranges.append((cls["line_number"], cls.get("end_line", 999999), cls["name"]))
+
+        def _class_at_line(line: int) -> Optional[str]:
+            for start, end, name in class_ranges:
+                if start <= line <= end:
+                    return name
+            return None
+
+        injections: List[Dict[str, Any]] = []
+
+        def _walk(node: Any) -> None:
+            if node.type == "field_declaration":
+                annotations = self._get_node_annotations(node)
+                ann_names = {n for n, _ in annotations}
+                if ann_names & _SPRING_INJECT_ANNOTATIONS:
+                    # Get declared type (the field type, e.g. UserService)
+                    type_node = node.child_by_field_name("type")
+                    if type_node:
+                        field_type = self._strip_generic(self._get_node_text(type_node))
+                        # Get field variable name
+                        for child in node.children:
+                            if child.type == "variable_declarator":
+                                name_node = child.child_by_field_name("name")
+                                if name_node:
+                                    field_line = node.start_point[0] + 1
+                                    injector_cls = _class_at_line(field_line)
+                                    if injector_cls:
+                                        injections.append({
+                                            "injector_class": injector_cls,
+                                            "injector_path": str(path),
+                                            "injected_class": field_type,
+                                            "field_name": self._get_node_text(name_node),
+                                            "inject_line": field_line,
+                                        })
+            for child in node.children:
+                _walk(child)
+
+        _walk(tree.root_node)
+        return injections
 
     def _parse_imports(self, captures: list, source_code: str) -> list[dict]:
         imports = []

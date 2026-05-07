@@ -20,6 +20,15 @@ _TIER_CONFIDENCE: Dict[int, float] = {
     9: 0.08,  # same-file fallback for obj.method() — definitionally wrong
 }
 
+# Human-readable confidence labels surfaced on graph edges (#885)
+def _confidence_label(tier: int, is_unresolved_external: bool) -> str:
+    """Map a resolution tier to EXTRACTED / INFERRED / AMBIGUOUS."""
+    if is_unresolved_external or tier >= 8:
+        return "AMBIGUOUS"
+    if tier in (1, 2, 5, 6):
+        return "EXTRACTED"
+    return "INFERRED"
+
 
 def resolve_function_call(
     call: Dict[str, Any],
@@ -143,6 +152,7 @@ def resolve_function_call(
         return None
 
     confidence = _TIER_CONFIDENCE.get(resolution_tier, 0.1)
+    conf_label = _confidence_label(resolution_tier, is_unresolved_external)
 
     caller_context = call.get("context")
     if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
@@ -158,6 +168,7 @@ def resolve_function_call(
             "args": call.get("args", []),
             "full_call_name": call.get("full_name", called_name),
             "confidence": confidence,
+            "confidence_label": conf_label,
             "resolution_tier": resolution_tier,
         }
     return {
@@ -169,6 +180,7 @@ def resolve_function_call(
         "args": call.get("args", []),
         "full_call_name": call.get("full_name", called_name),
         "confidence": confidence,
+        "confidence_label": conf_label,
         "resolution_tier": resolution_tier,
     }
 
