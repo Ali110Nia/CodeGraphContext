@@ -15,11 +15,15 @@ from ..utils.debug_log import debug_log
 
 app = FastAPI()
 
-# Enable CORS for development
+# CORS: only allow requests from the local visualization frontend.
+# The server binds to 127.0.0.1 (localhost) so only local origins are legitimate.
+_ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=[],
+    allow_origin_regex=_ALLOWED_ORIGIN_REGEX,
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
