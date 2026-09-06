@@ -1,5 +1,7 @@
 
 import os
+import sys
+import types
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -15,7 +17,7 @@ class TestFalkorDBRemoteManager:
         from codegraphcontext.core.database_falkordb_remote import FalkorDBRemoteManager
         FalkorDBRemoteManager._instance = None
         FalkorDBRemoteManager._driver = None
-        FalkorDBRemoteManager._graph = None
+        FalkorDBRemoteManager._graphs = {}
         # Remove _initialized from any lingering instance
         if FalkorDBRemoteManager._instance and hasattr(FalkorDBRemoteManager._instance, '_initialized'):
             del FalkorDBRemoteManager._instance._initialized
@@ -117,7 +119,8 @@ class TestFalkorDBRemoteManager:
             mock_falkordb_cls.return_value = mock_db_instance
             mock_db_instance.select_graph.return_value = mock_graph
 
-            with patch('falkordb.FalkorDB', mock_falkordb_cls):
+            fake_falkordb_module = types.SimpleNamespace(FalkorDB=mock_falkordb_cls)
+            with patch.dict(sys.modules, {'falkordb': fake_falkordb_module}):
                 driver_wrapper = manager.get_driver()
 
             mock_falkordb_cls.assert_called_once_with(
@@ -151,7 +154,8 @@ class TestFalkorDBRemoteManager:
             mock_falkordb_cls.return_value = mock_db
             mock_db.select_graph.return_value = mock_graph
 
-            with patch('falkordb.FalkorDB', mock_falkordb_cls):
+            fake_falkordb_module = types.SimpleNamespace(FalkorDB=mock_falkordb_cls)
+            with patch.dict(sys.modules, {'falkordb': fake_falkordb_module}):
                 manager.get_driver()
 
             # Should NOT include password, username, or ssl
@@ -177,7 +181,8 @@ class TestFalkorDBRemoteManager:
             mock_falkordb_cls.return_value = mock_db
             mock_db.select_graph.return_value = mock_graph
 
-            with patch('falkordb.FalkorDB', mock_falkordb_cls):
+            fake_falkordb_module = types.SimpleNamespace(FalkorDB=mock_falkordb_cls)
+            with patch.dict(sys.modules, {'falkordb': fake_falkordb_module}):
                 d1 = manager.get_driver()
                 d2 = manager.get_driver()
 
@@ -195,7 +200,8 @@ class TestFalkorDBRemoteManager:
             self._reset_singleton()
             manager = FalkorDBRemoteManager()
             mock_graph = MagicMock()
-            manager._graph = mock_graph
+            manager._driver = MagicMock()
+            manager._graphs = {manager.graph_name: mock_graph}
 
             assert manager.is_connected() is True
             mock_graph.query.assert_called_with("RETURN 1")
@@ -224,7 +230,8 @@ class TestFalkorDBRemoteManager:
             manager = FalkorDBRemoteManager()
             mock_graph = MagicMock()
             mock_graph.query.side_effect = ConnectionError("disconnected")
-            manager._graph = mock_graph
+            manager._driver = MagicMock()
+            manager._graphs = {manager.graph_name: mock_graph}
 
             assert manager.is_connected() is False
 
@@ -251,11 +258,11 @@ class TestFalkorDBRemoteManager:
             self._reset_singleton()
             manager = FalkorDBRemoteManager()
             manager._driver = MagicMock()
-            manager._graph = MagicMock()
+            manager._graphs = {manager.graph_name: MagicMock()}
 
             manager.close_driver()
             assert manager._driver is None
-            assert manager._graph is None
+            assert manager._graphs == {}
 
     def test_validate_config_no_host(self):
         """Test validate_config fails when FALKORDB_HOST not set."""
@@ -313,23 +320,23 @@ class TestFactoryFalkorDBRemote:
         from codegraphcontext.core.database_falkordb_remote import FalkorDBRemoteManager
         FalkorDBRemoteManager._instance = None
         FalkorDBRemoteManager._driver = None
-        FalkorDBRemoteManager._graph = None
+        FalkorDBRemoteManager._graphs = {}
 
     def teardown_method(self):
         from codegraphcontext.core.database_falkordb_remote import FalkorDBRemoteManager
         FalkorDBRemoteManager._instance = None
         FalkorDBRemoteManager._driver = None
-        FalkorDBRemoteManager._graph = None
+        FalkorDBRemoteManager._graphs = {}
 
     def test_explicit_falkordb_remote(self):
-        """Test DATABASE_TYPE=falkordb-remote returns FalkorDBRemoteManager."""
+        """Test DEFAULT_DATABASE=falkordb-remote returns FalkorDBRemoteManager."""
         env = {
-            'DATABASE_TYPE': 'falkordb-remote',
+            'DEFAULT_DATABASE': 'falkordb-remote',
             'FALKORDB_HOST': 'myhost',
         }
         # Clear conflicting vars
         clean_env = {k: v for k, v in os.environ.items()
-                     if k not in ('DATABASE_TYPE', 'DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
+                     if k not in ('DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
                      and not k.startswith('FALKORDB_')}
         clean_env.update(env)
 
@@ -340,11 +347,11 @@ class TestFactoryFalkorDBRemote:
             assert isinstance(manager, FalkorDBRemoteManager)
 
     def test_explicit_falkordb_remote_missing_host(self):
-        """Test DATABASE_TYPE=falkordb-remote without FALKORDB_HOST raises."""
+        """Test DEFAULT_DATABASE=falkordb-remote without FALKORDB_HOST raises."""
         clean_env = {k: v for k, v in os.environ.items()
-                     if k not in ('DATABASE_TYPE', 'DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
+                     if k not in ('DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
                      and not k.startswith('FALKORDB_')}
-        clean_env.update({'DATABASE_TYPE': 'falkordb-remote'})
+        clean_env.update({'DEFAULT_DATABASE': 'falkordb-remote'})
 
         with patch.dict(os.environ, clean_env, clear=True):
             from codegraphcontext.core import get_database_manager
@@ -352,9 +359,9 @@ class TestFactoryFalkorDBRemote:
                 get_database_manager()
 
     def test_auto_detect_remote_via_host(self):
-        """Test that setting FALKORDB_HOST (without DATABASE_TYPE) auto-detects remote."""
+        """Test that setting FALKORDB_HOST (without DEFAULT_DATABASE) auto-detects remote."""
         clean_env = {k: v for k, v in os.environ.items()
-                     if k not in ('DATABASE_TYPE', 'DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
+                     if k not in ('DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
                      and not k.startswith('FALKORDB_')
                      and not k.startswith('NEO4J_')}
         clean_env.update({'FALKORDB_HOST': 'auto-detected.host'})
@@ -367,12 +374,30 @@ class TestFactoryFalkorDBRemote:
             assert manager.host == 'auto-detected.host'
 
     def test_unknown_db_type_includes_falkordb_remote(self):
-        """Test that unknown DATABASE_TYPE error message mentions falkordb-remote."""
+        """Test that unknown DEFAULT_DATABASE error message mentions falkordb-remote."""
         clean_env = {k: v for k, v in os.environ.items()
-                     if k not in ('DATABASE_TYPE', 'DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')}
-        clean_env.update({'DATABASE_TYPE': 'badvalue'})
+                     if k not in ('DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')}
+        clean_env.update({'DEFAULT_DATABASE': 'badvalue'})
 
         with patch.dict(os.environ, clean_env, clear=True):
             from codegraphcontext.core import get_database_manager
             with pytest.raises(ValueError, match="falkordb-remote"):
                 get_database_manager()
+
+    def test_runtime_db_type_overrides_default_database(self):
+        """CGC_RUNTIME_DB_TYPE wins over DEFAULT_DATABASE."""
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k not in ('DEFAULT_DATABASE', 'CGC_RUNTIME_DB_TYPE')
+                     and not k.startswith('FALKORDB_')
+                     and not k.startswith('NEO4J_')}
+        clean_env.update({
+            'DEFAULT_DATABASE': 'kuzudb',
+            'CGC_RUNTIME_DB_TYPE': 'falkordb-remote',
+            'FALKORDB_HOST': 'override-host',
+        })
+        with patch.dict(os.environ, clean_env, clear=True):
+            from codegraphcontext.core import get_database_manager
+            from codegraphcontext.core.database_falkordb_remote import FalkorDBRemoteManager
+            manager = get_database_manager()
+            assert isinstance(manager, FalkorDBRemoteManager)
+            assert manager.host == 'override-host'

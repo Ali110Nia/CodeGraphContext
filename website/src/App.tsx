@@ -1,32 +1,34 @@
-import { useEffect } from "react";
+
+import { lazy, Suspense } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
-import Explore from "./pages/Explore";
-import MoveToTop from "./components/MoveToTop";
-import Navbar from "./components/Navbar";
+import { Loader2 } from "lucide-react";
 
-// ✅ Import AOS library and CSS
-import AOS from "aos";
-import "aos/dist/aos.css";
+const Index = lazy(() => import("./pages/Index"));
+const Explore = lazy(() => import("./pages/Explore"));
+const Privacy = lazy(() => import("./pages/Privacy"));
+const PRReviewerPage = lazy(() => import("./pages/PRReviewerPage"));
+const Contributing = lazy(() => import("./pages/Contributing"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+
+import Navbar from "./components/Navbar";
+import MoveToTop from "./components/MoveToTop";
 
 const queryClient = new QueryClient();
 
+const LoadingFallback: React.FC = () => (
+  <div className="min-h-screen bg-black flex flex-col items-center justify-center text-white font-mono text-sm gap-3">
+    <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+    <span>Loading...</span>
+  </div>
+);
+
 const App: React.FC = () => {
-  // ✅ Initialize AOS once on mount
-  useEffect(() => {
-    AOS.init({
-      duration: 800, // Animation duration (ms)
-      easing: "ease-in-out", // Smooth transition
-      once: true, // Run animation only once
-      mirror: false, // Do not animate when scrolling back up
-    });
-  }, []);
 
   return (
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -34,21 +36,31 @@ const App: React.FC = () => {
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
-          enableSystem
+          enableSystem={false}
           disableTransitionOnChange
         >
           <TooltipProvider>
+            <Analytics />
             <Toaster />
             <Sonner />
             <Navbar />
-            <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/explore" element={<Explore />} />
-              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-            {/* Move to Top button */}
             <MoveToTop />
+            <Suspense fallback={<LoadingFallback />}>
+              <Routes>
+                <Route path="/" element={<Index />} />
+                <Route path="/pre-indexed" element={<Index />} />
+                <Route path="/explore" element={<Explore />} />
+                <Route path="/privacy" element={<Privacy />} />
+                <Route path="/contributing" element={<Contributing />} />
+                <Route path="/pr-reviewer" element={<PRReviewerPage />} />
+                <Route path="/pr-reviewer/:owner/:repo/pull/:prNumber" element={<PRReviewerPage />} />
+                <Route path="/github/:owner/:repo" element={<Explore />} />
+                <Route path="/gitlab/*" element={<Explore />} />
+                <Route path="/:owner/:repo" element={<Explore />} />
+                {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
           </TooltipProvider>
         </ThemeProvider>
       </QueryClientProvider>
